@@ -1,0 +1,26 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&display=swap');
+
+* { box-sizing: border-box; }
+body { font-family: 'DM Sans', system-ui, sans-serif; }
+
+@layer components {
+  .btn  { @apply inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium rounded-lg border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 transition-colors cursor-pointer; }
+  .btn-primary { @apply btn bg-brand-500 text-white border-brand-500 hover:bg-brand-600; }
+  .btn-danger  { @apply btn bg-red-50 text-red-600 border-red-100 hover:bg-red-100; }
+  .btn-sm      { @apply px-2.5 py-1.5 text-xs; }
+  .input  { @apply w-full px-3 py-2 text-sm rounded-lg border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/25 focus:border-brand-500 transition-all; }
+  .label  { @apply block text-xs font-medium text-gray-500 mb-1; }
+  .card   { @apply bg-white rounded-xl border border-gray-100 shadow-sm; }
+  .badge  { @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium; }
+  .th     { @apply px-4 py-2.5 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide border-b border-gray-100; }
+  .td     { @apply px-4 py-3 text-sm text-gray-700 border-b border-gray-50 last:border-0; }
+  .nav-link { @apply flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm text-gray-500 hover:bg-brand-50 hover:text-brand-600 transition-all; }
+  .nav-link.active { @apply bg-brand-50 text-brand-600 font-medium; }
+}
+
+@keyframes fade-up { from { opacity:0; transform:translateY(8px) } to { opacity:1; transform:none } }
+.animate-fu { animation: fade-up .18s ease-out; }
