@@ -3,7 +3,7 @@ import { serverSB } from '@/lib/server'
 import DashboardShell from '@/components/DashboardShell'
 
 export default async function DashboardPage() {
-  const supabase = serverSB()
+  const supabase = await serverSB()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 

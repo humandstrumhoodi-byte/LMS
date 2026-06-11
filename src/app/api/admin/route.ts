@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { serverSB, serviceSB } from '@/lib/server'
 
 async function getCallerRole() {
-  const s = serverSB()
+  const s = await serverSB()
   const { data: { user } } = await s.auth.getUser()
   if (!user) return null
   const { data } = await s.from('profiles').select('role').eq('id', user.id).single()
@@ -16,11 +16,10 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json()
 
-  // center_manager can only create teachers
   if (role === 'center_manager' && body.role !== 'teacher')
     return NextResponse.json({ error: 'Center managers may only create teacher accounts' }, { status: 403 })
 
-  const svc = serviceSB()
+  const svc = await serviceSB()
   const { data: authData, error: authErr } = await svc.auth.admin.createUser({
     email: body.email,
     password: body.password,
@@ -52,7 +51,7 @@ export async function DELETE(req: NextRequest) {
   const id = req.nextUrl.searchParams.get('id')
   if (!id) return NextResponse.json({ error: 'Missing id' }, { status: 400 })
 
-  const svc = serviceSB()
+  const svc = await serviceSB()
   await svc.from('profiles').delete().eq('id', id)
   await svc.auth.admin.deleteUser(id)
   return NextResponse.json({ ok: true })
@@ -64,7 +63,7 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: 'Only superadmin can change roles' }, { status: 403 })
 
   const { id, role } = await req.json()
-  const svc = serviceSB()
+  const svc = await serviceSB()
   await svc.from('profiles').update({ role }).eq('id', id)
   return NextResponse.json({ ok: true })
 }

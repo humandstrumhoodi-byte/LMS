@@ -2,7 +2,6 @@ import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 import type { Role } from '@/types'
 
-// Routes only certain roles may access
 const GUARD: Record<string, Role[]> = {
   '/dashboard/users':    ['superadmin'],
   '/dashboard/fees':     ['superadmin', 'center_manager'],
@@ -22,7 +21,11 @@ export async function middleware(req: NextRequest) {
     {
       cookies: {
         getAll: () => req.cookies.getAll(),
-        setAll: (cs) => { cs.forEach(({ name, value }) => req.cookies.set(name, value)); res = NextResponse.next({ request: req }); cs.forEach(({ name, value, options }) => res.cookies.set(name, value, options)) },
+        setAll: (cs: { name: string; value: string; options?: any }[]) => {
+          cs.forEach(({ name, value }) => req.cookies.set(name, value))
+          res = NextResponse.next({ request: req })
+          cs.forEach(({ name, value, options }) => res.cookies.set(name, value, options))
+        },
       },
     }
   )
@@ -36,7 +39,7 @@ export async function middleware(req: NextRequest) {
   if (user && path.startsWith('/dashboard')) {
     const { data: p } = await supabase.from('profiles').select('role').eq('id', user.id).single()
     const role = p?.role as Role | undefined
-    const matched = Object.keys(GUARD).filter(k => path.startsWith(k)).sort((a,b) => b.length - a.length)[0]
+    const matched = Object.keys(GUARD).filter(k => path.startsWith(k)).sort((a, b) => b.length - a.length)[0]
     if (matched && role && !GUARD[matched].includes(role)) {
       return NextResponse.redirect(new URL('/dashboard?denied=1', req.url))
     }
