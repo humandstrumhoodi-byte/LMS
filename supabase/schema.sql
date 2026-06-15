@@ -196,3 +196,25 @@ CREATE TRIGGER on_auth_user_created
 --    SET role = 'superadmin', full_name = 'Your Name'
 --    WHERE email = 'your@email.com';
 -- ================================================================
+
+-- ================================================================
+-- LEADS TABLE (add this if you already ran the original schema)
+-- ================================================================
+CREATE TABLE IF NOT EXISTS public.leads (
+  id               UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  full_name        TEXT NOT NULL,
+  email            TEXT,
+  phone            TEXT,
+  source           TEXT,
+  notes            TEXT,
+  status           TEXT NOT NULL DEFAULT 'New'
+                     CHECK (status IN ('New','Contacted','Interested','Trial Scheduled','Converted','Lost')),
+  interest_subject TEXT,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE public.leads ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "leads_read"   ON public.leads FOR SELECT TO authenticated USING (my_role() IN ('superadmin','center_manager'));
+CREATE POLICY "leads_insert" ON public.leads FOR INSERT TO authenticated WITH CHECK (my_role() IN ('superadmin','center_manager'));
+CREATE POLICY "leads_update" ON public.leads FOR UPDATE TO authenticated USING (my_role() IN ('superadmin','center_manager'));
+CREATE POLICY "leads_delete" ON public.leads FOR DELETE TO authenticated USING (my_role() IN ('superadmin','center_manager'));
