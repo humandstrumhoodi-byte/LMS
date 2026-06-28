@@ -206,10 +206,8 @@ export default function StudentPortal() {
     <div className="min-h-screen bg-gradient-to-br from-[#2D1B69] via-[#3B1F8C] to-[#4A2FA0] flex flex-col items-center justify-center p-5">
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <div className="w-16 h-16 bg-white/15 rounded-2xl flex items-center justify-center mx-auto mb-4 backdrop-blur-sm border border-white/20">
-            <Music className="w-8 h-8 text-white"/>
-          </div>
-          <h1 className="text-2xl font-bold text-white">Hum & Strum</h1>
+          <img src="/logo.png" alt="Hum &amp; Strum" className="w-24 h-24 rounded-full mx-auto mb-4 object-cover border-4 border-white/20 shadow-xl"/>
+          <h1 className="text-2xl font-bold text-white">Hum &amp; Strum</h1>
           <p className="text-white/60 text-sm mt-1">Student Portal</p>
         </div>
 
@@ -246,10 +244,8 @@ export default function StudentPortal() {
     <div className="min-h-screen bg-gradient-to-br from-[#2D1B69] via-[#3B1F8C] to-[#4A2FA0] flex flex-col items-center justify-center p-5">
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <div className="w-16 h-16 bg-white/15 rounded-2xl flex items-center justify-center mx-auto mb-4">
-            <Music className="w-8 h-8 text-white"/>
-          </div>
-          <h1 className="text-2xl font-bold text-white">Hum & Strum</h1>
+          <img src="/logo.png" alt="Hum &amp; Strum" className="w-20 h-20 rounded-full mx-auto mb-4 object-cover border-4 border-white/20 shadow-xl"/>
+          <h1 className="text-2xl font-bold text-white">Hum &amp; Strum</h1>
         </div>
 
         <div className="bg-white rounded-3xl p-7 shadow-2xl">
@@ -307,9 +303,12 @@ export default function StudentPortal() {
       {/* Top bar */}
       <div className="bg-[#3B1F8C] px-4 pt-10 pb-16">
         <div className="flex items-center justify-between">
-          <div>
-            <div className="text-white/60 text-xs">Welcome back</div>
-            <div className="text-white font-bold text-lg">{student.full_name.split(' ')[0]} 👋</div>
+          <div className="flex items-center gap-3">
+            <img src="/logo.png" alt="Logo" className="w-9 h-9 rounded-full object-cover border-2 border-white/20"/>
+            <div>
+              <div className="text-white/60 text-xs">Welcome back</div>
+              <div className="text-white font-bold text-lg">{student.full_name.split(' ')[0]} 👋</div>
+            </div>
           </div>
           <button onClick={logout} className="w-8 h-8 flex items-center justify-center rounded-full bg-white/10 text-white/60 hover:bg-white/20">
             <LogOut className="w-4 h-4"/>

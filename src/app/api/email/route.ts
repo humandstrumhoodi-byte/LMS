@@ -142,7 +142,10 @@ export async function POST(req: NextRequest) {
         <!-- Header -->
         <div style="background:#3B1F8C;padding:20px 24px;border-radius:12px 12px 0 0;display:flex;justify-content:space-between;align-items:center">
           <div>
-            <div style="color:white;font-size:20px;font-weight:700;letter-spacing:-0.3px">🎵 Hum &amp; Strum</div>
+            <div style="display:flex;align-items:center;gap:10px">
+              <img src="${process.env.NEXT_PUBLIC_APP_URL || 'https://your-app.vercel.app'}/logo.png" alt="" width="36" height="36" style="width:36px;height:36px;border-radius:50%;object-fit:cover;border:2px solid rgba(255,255,255,0.25)" onerror="this.style.display='none'"/>
+              <div style="color:white;font-size:20px;font-weight:700;letter-spacing:-0.3px">Hum &amp; Strum</div>
+            </div>
             <div style="color:rgba(255,255,255,0.65);font-size:12px;margin-top:2px">${academyAddress} · ${academyPhone}</div>
           </div>
           <div style="text-align:right">

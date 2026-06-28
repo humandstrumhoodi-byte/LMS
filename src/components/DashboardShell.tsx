@@ -337,6 +337,14 @@ function DashboardShellInner({profile}:{profile:Profile}){
           )})}
         </nav>
         <div className="px-3 py-4 border-t border-gray-100">
+          {/* Academy logo */}
+          <div className="flex items-center gap-2.5 px-3 mb-3">
+            <img src="/logo.png" alt="Hum & Strum" className="w-8 h-8 rounded-full object-cover flex-shrink-0 border border-gray-100"/>
+            <div className="min-w-0">
+              <div className="text-xs font-semibold text-gray-900">Hum &amp; Strum</div>
+              <div className="text-xs text-gray-400">Music School</div>
+            </div>
+          </div>
           <div className="flex items-center gap-2.5 px-3 mb-2">
             <div className={clsx('w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold flex-shrink-0',ac(0))}>{ini(profile.full_name)}</div>
             <div className="min-w-0"><div className="text-xs font-medium text-gray-900 truncate">{profile.full_name}</div><span className={clsx('badge text-xs',ROLE_COLOR[profile.role as Role])}>{ROLE_LABEL[profile.role as Role]}</span></div>
@@ -2669,7 +2677,10 @@ function InvoicePreview({ student, subject, pkg, form, invoiceNo, rawAmount, dis
         {/* Header band */}
         <div style={{background:'#3B1F8C',padding:'20px 24px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
           <div>
-            <div style={{color:'white',fontSize:'18px',fontWeight:700,letterSpacing:'-0.3px'}}>🎵 {ACADEMY_NAME}</div>
+            <div style={{display:'flex',alignItems:'center',gap:'10px'}}>
+              <img src="/logo.png" alt="Logo" style={{width:'36px',height:'36px',borderRadius:'50%',objectFit:'cover',border:'2px solid rgba(255,255,255,0.3)'}}/>
+              <div style={{color:'white',fontSize:'18px',fontWeight:700,letterSpacing:'-0.3px'}}>{ACADEMY_NAME}</div>
+            </div>
             <div style={{color:'rgba(255,255,255,0.7)',fontSize:'12px',marginTop:'2px'}}>{ACADEMY_ADDRESS} · {ACADEMY_PHONE}</div>
           </div>
           <div style={{textAlign:'right'}}>

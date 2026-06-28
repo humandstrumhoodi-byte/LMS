@@ -24,11 +24,11 @@ export default function LoginPage() {
       <div className="w-full max-w-sm">
         {/* logo */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-white/15 backdrop-blur-sm border border-white/20 mb-4">
-            <Music className="w-7 h-7 text-white" />
+          <div className="mb-4">
+            <img src="/logo.png" alt="Hum &amp; Strum" className="w-20 h-20 rounded-full mx-auto object-cover border-4 border-white/20 shadow-lg"/>
           </div>
-          <h1 className="text-2xl font-semibold text-white">Academy LMS</h1>
-          <p className="text-white/60 text-sm mt-1">Sign in to your workspace</p>
+          <h1 className="text-2xl font-semibold text-white">Hum &amp; Strum</h1>
+          <p className="text-white/60 text-sm mt-1">Music School Admin Portal</p>
         </div>
 
         <div className="card p-7">
