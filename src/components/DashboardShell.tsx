@@ -254,6 +254,7 @@ function DashboardShellInner({profile}:{profile:Profile}){
   const [payments,setPayments]=useState<any[]>([])
   const [leads,setLeads]=useState<any[]>([])
   const [packages,setPackages]=useState<any[]>([])
+  const [subjectTeachers,setSubjectTeachers]=useState<any[]>([])
 
   const load=useCallback(async()=>{
     try{
@@ -274,6 +275,10 @@ function DashboardShellInner({profile}:{profile:Profile}){
         const pkg = await client.from('subject_packages').select('*, subjects(name,code,color)').order('subject_id').order('grade_level').order('classes_pm')
         setPackages(pkg.data||[])
       }catch(pkgErr){ console.warn('[subject_packages] Table may not exist yet — run add_packages.sql in Supabase') }
+      try{
+        const st = await client.from('subject_teachers').select('*, profiles(id,full_name,role)').order('subject_id').order('grade_level')
+        setSubjectTeachers(st.data||[])
+      }catch(stErr){ console.warn('[subject_teachers] Table may not exist yet — run add_subject_teachers.sql') }
     }catch(e){console.error('[LMS load error]',e)}
   },[])
 
@@ -323,7 +328,7 @@ function DashboardShellInner({profile}:{profile:Profile}){
           {tab==='students'&&<StudentsTab students={students} subjects={subjects} reload={load}/>}
           {tab==='leads'&&<LeadsTab leads={leads} subjects={subjects} reload={load}/>}
           {tab==='teachers'&&<TeachersTab profiles={profiles} subjects={subjects} reload={load}/>}
-          {tab==='subjects'&&<SubjectsTab subjects={subjects} profiles={profiles} students={students} fees={fees} reload={load}/>}
+          {tab==='subjects'&&<SubjectsTab subjects={subjects} profiles={profiles} students={students} fees={fees} subjectTeachers={subjectTeachers} reload={load}/>}
           {tab==='packages'&&<PackagesTab packages={packages} subjects={subjects} reload={load}/>}
           {tab==='schedule'&&<ScheduleTab schedules={schedules} subjects={subjects} students={students} profile={profile} perms={perms} reload={load}/>}
           {tab==='fees'&&<FeesTab subjects={subjects} fees={fees} reload={load}/>}
@@ -383,8 +388,21 @@ function StudentsTab({students,subjects,reload}:any){
 
   async function viewStudent(s:any){
     setDetailStudent(s)
-    const {data}=await supabase.from('payments').select('*, subjects(name)').eq('student_id',s.id).order('payment_date',{ascending:false})
-    setStudentPayments(data||[])
+    setStudentPayments([])
+    // Fetch payments AND invoice payments (matched by student_id OR student_id_ext)
+    const [{data:d1},{data:d2}]=await Promise.all([
+      supabase.from('payments').select('*, subjects(name,color)').eq('student_id',s.id).order('payment_date',{ascending:false}),
+      s.student_id_ext ? supabase.from('payments').select('*, subjects(name,color)').eq('student_id_ext',s.student_id_ext).is('student_id',null).order('payment_date',{ascending:false}) : Promise.resolve({data:[]}),
+    ])
+    const all=[...(d1||[]),...(d2||[])]
+    // Deduplicate by invoice_number
+    const seen=new Set<string>()
+    const deduped=all.filter(p=>{
+      const key=p.invoice_number||p.id
+      if(seen.has(key))return false
+      seen.add(key); return true
+    })
+    setStudentPayments(deduped)
   }
 
   const openAdd=()=>{setEditing(null);setForm({full_name:'',email:'',phone:'',joined_date:new Date().toISOString().slice(0,10),status:'Active',subject_ids:[]});setOpen(true)}
@@ -450,41 +468,13 @@ function StudentsTab({students,subjects,reload}:any){
         </div>
       </div>
 
-      {/* Student detail + payment history modal */}
-      <Modal open={!!detailStudent} onClose={()=>setDetailStudent(null)} title={`${detailStudent?.full_name} — Details`} wide>
-        {detailStudent&&(
-          <div className="space-y-5">
-            <div className="grid grid-cols-2 gap-3 text-sm">
-              {[['Email',detailStudent.email],['Phone',detailStudent.phone],['Status',detailStudent.status],['DOB',detailStudent.date_of_birth],['Gender',detailStudent.gender],['City',detailStudent.city],['Guardian',detailStudent.guardian_name],['Guardian Ph',detailStudent.guardian_phone],['Discipline',detailStudent.discipline],['Student ID',detailStudent.student_id_ext]].map(([k,v])=>v&&(
-                <div key={k} className="bg-gray-50 rounded-lg px-3 py-2"><div className="text-xs text-gray-400">{k}</div><div className="font-medium text-gray-800">{v}</div></div>
-              ))}
-            </div>
-            <div>
-              <div className="text-sm font-semibold text-gray-800 mb-3">Payment History</div>
-              {studentPayments.length===0?<div className="text-sm text-gray-400 text-center py-6">No payments recorded</div>:(
-                <table className="w-full text-sm">
-                  <thead><tr><th className="th">Date</th><th className="th">Subject</th><th className="th">Amount</th><th className="th">Mode</th><th className="th">Receipt</th><th className="th">Status</th></tr></thead>
-                  <tbody>
-                    {studentPayments.map((p:any)=>(
-                      <tr key={p.id} className="hover:bg-gray-50/50">
-                        <td className="td">{p.payment_date||'—'}</td>
-                        <td className="td">{p.subjects?.name||p.student_name||'—'}</td>
-                        <td className="td font-semibold">{fmt(p.amount)}</td>
-                        <td className="td text-gray-400">{p.mode_of_payment||'—'}</td>
-                        <td className="td text-gray-400">#{p.receipt_number||'—'}</td>
-                        <td className="td"><span className={clsx('badge',p.status==='paid'?'bg-emerald-50 text-emerald-700':p.status==='failed'?'bg-red-50 text-red-600':'bg-amber-50 text-amber-700')}>{p.status}</span></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-              <div className="mt-3 flex justify-between items-center pt-3 border-t border-gray-100">
-                <span className="text-xs text-gray-400">Total paid: <strong className="text-emerald-700">{fmt(studentPayments.filter(p=>p.status==='paid').reduce((a:number,p:any)=>a+p.amount,0))}</strong></span>
-              </div>
-            </div>
-          </div>
-        )}
-      </Modal>
+      {/* Student detail + month-by-month payment modal */}
+      {detailStudent&&<StudentDetailModal
+        student={detailStudent}
+        payments={studentPayments}
+        subjects={subjects}
+        onClose={()=>setDetailStudent(null)}
+      />}
 
       <Modal open={open} onClose={()=>setOpen(false)} title={editing?'Edit Student':'Add Student'}>
         <div className="space-y-3">
@@ -834,37 +824,275 @@ function TeachersTab({profiles,subjects,reload}:any){
 }
 
 // ══════════════════════════════════════════════════════════════ SUBJECTS
-function SubjectsTab({subjects,profiles,students,fees,reload}:any){
+const GRADE_LEVELS_LIST = ['All Levels', 'Beginner–Grade 2', 'Grade 3–5', 'Grade 6–8']
+
+function SubjectsTab({subjects,profiles,students,fees,subjectTeachers,reload}:any){
   const supabase=sb()
   const teachers=profiles.filter((p:any)=>['teacher','center_manager','superadmin'].includes(p.role))
-  const [open,setOpen]=useState(false);const [editing,setEditing]=useState<any>(null)
-  const [form,setForm]=useState({name:'',code:'',level:'',color:'violet',teacher_id:''});const [busy,setBusy]=useState(false)
-  const openAdd=()=>{setEditing(null);setForm({name:'',code:'',level:'',color:'violet',teacher_id:''});setOpen(true)}
-  const openEdit=(s:any)=>{setEditing(s);setForm({name:s.name,code:s.code,level:s.level||'',color:s.color||'violet',teacher_id:s.teacher_id||''});setOpen(true)}
-  async function save(){if(!form.name.trim())return;setBusy(true);const p={name:form.name.trim(),code:form.code.toUpperCase(),level:form.level||null,color:form.color,teacher_id:form.teacher_id||null};if(editing)await supabase.from('subjects').update(p).eq('id',editing.id);else await supabase.from('subjects').insert(p);setBusy(false);setOpen(false);reload()}
-  async function del(id:string){if(!confirm('Delete subject?'))return;await supabase.from('subjects').delete().eq('id',id);reload()}
+
+  // Subject add/edit
+  const [open,setOpen]=useState(false)
+  const [editing,setEditing]=useState<any>(null)
+  const [form,setForm]=useState({name:'',code:'',level:'',color:'violet'})
+  const [busy,setBusy]=useState(false)
+
+  // Teacher assignment modal
+  const [teacherOpen,setTeacherOpen]=useState(false)
+  const [teacherSubject,setTeacherSubject]=useState<any>(null)
+  const [tForm,setTForm]=useState({teacher_id:'',grade_level:'All Levels',is_primary:false})
+  const [tBusy,setTBusy]=useState(false)
+
+  const openAdd=()=>{setEditing(null);setForm({name:'',code:'',level:'',color:'violet'});setOpen(true)}
+  const openEdit=(s:any)=>{setEditing(s);setForm({name:s.name,code:s.code,level:s.level||'',color:s.color||'violet'});setOpen(true)}
+
+  async function save(){
+    if(!form.name.trim())return;setBusy(true)
+    const p={name:form.name.trim(),code:form.code.toUpperCase(),level:form.level||null,color:form.color}
+    if(editing)await supabase.from('subjects').update(p).eq('id',editing.id)
+    else await supabase.from('subjects').insert(p)
+    setBusy(false);setOpen(false);reload()
+  }
+
+  async function del(id:string){
+    if(!confirm('Delete subject? This will also remove all teacher assignments.'))return
+    await supabase.from('subjects').delete().eq('id',id);reload()
+  }
+
+  // Teacher assignment
+  function openTeacherAssign(s:any){
+    setTeacherSubject(s)
+    setTForm({teacher_id:'',grade_level:'All Levels',is_primary:false})
+    setTeacherOpen(true)
+  }
+
+  async function addTeacher(){
+    if(!tForm.teacher_id||!teacherSubject)return
+    setTBusy(true)
+    await supabase.from('subject_teachers').upsert({
+      subject_id: teacherSubject.id,
+      teacher_id: tForm.teacher_id,
+      grade_level: tForm.grade_level,
+      is_primary: tForm.is_primary,
+    },{onConflict:'subject_id,teacher_id,grade_level'})
+    // If primary, also update the legacy teacher_id on subjects
+    if(tForm.is_primary){
+      await supabase.from('subjects').update({teacher_id:tForm.teacher_id}).eq('id',teacherSubject.id)
+    }
+    setTBusy(false)
+    setTForm({teacher_id:'',grade_level:'All Levels',is_primary:false})
+    reload()
+  }
+
+  async function removeTeacher(stId:string, subjectId:string, teacherId:string){
+    await supabase.from('subject_teachers').delete().eq('id',stId)
+    // If this was the primary teacher, clear the legacy field
+    const sub=subjects.find((s:any)=>s.id===subjectId)
+    if(sub?.teacher_id===teacherId){
+      await supabase.from('subjects').update({teacher_id:null}).eq('id',subjectId)
+    }
+    reload()
+  }
+
+  async function setPrimary(stId:string, subjectId:string, teacherId:string){
+    // Clear all primary for this subject first
+    await supabase.from('subject_teachers').update({is_primary:false}).eq('subject_id',subjectId)
+    await supabase.from('subject_teachers').update({is_primary:true}).eq('id',stId)
+    await supabase.from('subjects').update({teacher_id:teacherId}).eq('id',subjectId)
+    reload()
+  }
+
+  const gradeColor:Record<string,string>={
+    'All Levels':'bg-gray-100 text-gray-600',
+    'Beginner–Grade 2':'bg-emerald-50 text-emerald-700',
+    'Grade 3–5':'bg-blue-50 text-blue-700',
+    'Grade 6–8':'bg-purple-50 text-purple-700',
+  }
+
   return(
     <div className="animate-fu">
-      <div className="flex items-center justify-between mb-5"><div><h1 className="text-xl font-semibold text-gray-900">Subjects</h1><p className="text-sm text-gray-400 mt-0.5">{subjects.length} courses</p></div><button onClick={openAdd} className="btn-primary"><Plus className="w-4 h-4"/> Add Subject</button></div>
+      <div className="flex items-center justify-between mb-5">
+        <div><h1 className="text-xl font-semibold text-gray-900">Subjects</h1><p className="text-sm text-gray-400 mt-0.5">{subjects.length} courses</p></div>
+        <button onClick={openAdd} className="btn-primary"><Plus className="w-4 h-4"/> Add Subject</button>
+      </div>
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {subjects.map((s:any)=>{
-          const teacher=profiles.find((p:any)=>p.id===s.teacher_id)
           const enrolled=students.filter((st:any)=>(st.student_subjects||[]).some((ss:any)=>ss.subject_id===s.id)).length
           const fee=fees.find((f:any)=>f.subject_id===s.id)
-          return(<div key={s.id} className="card p-5 hover:shadow-md transition-shadow">
-            <div className="flex items-start justify-between mb-3"><span className={clsx('badge',colorBadge[s.color]||colorBadge.violet)}>{s.code||s.name.slice(0,3).toUpperCase()}</span><div className="flex gap-1"><button onClick={()=>openEdit(s)} className="btn btn-sm"><Edit className="w-3 h-3"/></button><button onClick={()=>del(s.id)} className="btn btn-sm btn-danger"><Trash2 className="w-3 h-3"/></button></div></div>
-            <div className="font-semibold text-gray-900 mb-0.5">{s.name}</div><div className="text-xs text-gray-400 mb-4">{s.level}</div>
-            <div className="space-y-1.5 text-xs"><div className="flex justify-between"><span className="text-gray-400">Teacher</span><span className="font-medium">{teacher?.full_name||'Unassigned'}</span></div><div className="flex justify-between"><span className="text-gray-400">Students</span><span className="font-medium">{enrolled}</span></div><div className="flex justify-between"><span className="text-gray-400">Monthly fee</span><span className="font-semibold text-brand-600">{fee?fmt(fee.amount):'Not set'}</span></div></div>
-          </div>)
+          const sTeachers=(subjectTeachers||[]).filter((st:any)=>st.subject_id===s.id)
+          const primaryT=sTeachers.find((st:any)=>st.is_primary)||sTeachers[0]
+
+          return(
+            <div key={s.id} className="card p-5 hover:shadow-md transition-shadow">
+              {/* Header */}
+              <div className="flex items-start justify-between mb-3">
+                <span className={clsx('badge',colorBadge[s.color]||colorBadge.violet)}>{s.code||s.name.slice(0,3).toUpperCase()}</span>
+                <div className="flex gap-1">
+                  <button onClick={()=>openEdit(s)} className="btn btn-sm"><Edit className="w-3 h-3"/></button>
+                  <button onClick={()=>del(s.id)} className="btn btn-sm btn-danger"><Trash2 className="w-3 h-3"/></button>
+                </div>
+              </div>
+
+              <div className="font-semibold text-gray-900 mb-0.5">{s.name}</div>
+              <div className="text-xs text-gray-400 mb-3">{s.level}</div>
+
+              {/* Stats */}
+              <div className="flex gap-3 text-xs mb-3">
+                <div className="flex-1 bg-gray-50 rounded-lg px-2 py-1.5 text-center">
+                  <div className="font-semibold text-gray-900">{enrolled}</div>
+                  <div className="text-gray-400">students</div>
+                </div>
+                <div className="flex-1 bg-gray-50 rounded-lg px-2 py-1.5 text-center">
+                  <div className="font-semibold text-brand-600">{fee?fmt(fee.amount):'—'}</div>
+                  <div className="text-gray-400">base fee</div>
+                </div>
+              </div>
+
+              {/* Teachers by grade */}
+              <div className="border-t border-gray-100 pt-3">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Teachers</span>
+                  <button onClick={()=>openTeacherAssign(s)} className="text-xs text-brand-500 hover:text-brand-700 flex items-center gap-1">
+                    <Plus className="w-3 h-3"/> Assign
+                  </button>
+                </div>
+                {sTeachers.length===0
+                  ? <div className="text-xs text-gray-300">No teachers assigned</div>
+                  : <div className="space-y-1.5">
+                      {sTeachers.map((st:any)=>(
+                        <div key={st.id} className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <div className={clsx('w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0', ac(0))}>
+                              {ini(st.profiles?.full_name||'?')}
+                            </div>
+                            <div className="min-w-0">
+                              <div className="text-xs font-medium text-gray-800 truncate">{st.profiles?.full_name}</div>
+                              <span className={clsx('badge text-xs', gradeColor[st.grade_level]||gradeColor['All Levels'])}>{st.grade_level}</span>
+                              {st.is_primary && <span className="ml-1 text-xs text-amber-600 font-medium">★</span>}
+                            </div>
+                          </div>
+                          <div className="flex gap-1 flex-shrink-0">
+                            {!st.is_primary&&<button onClick={()=>setPrimary(st.id,s.id,st.teacher_id)} title="Set as primary" className="text-xs text-gray-300 hover:text-amber-500 px-1">★</button>}
+                            <button onClick={()=>removeTeacher(st.id,s.id,st.teacher_id)} className="text-gray-300 hover:text-red-500"><X className="w-3 h-3"/></button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                }
+              </div>
+            </div>
+          )
         })}
       </div>
+
+      {/* Add/Edit Subject Modal */}
       <Modal open={open} onClose={()=>setOpen(false)} title={editing?'Edit Subject':'Add Subject'}>
         <div className="space-y-3">
           <div><label className="label">Subject Name *</label><input className="input" value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))}/></div>
-          <div className="grid grid-cols-2 gap-3"><div><label className="label">Code</label><input className="input" value={form.code} onChange={e=>setForm(f=>({...f,code:e.target.value}))} maxLength={5}/></div><div><label className="label">Color</label><select className="input" value={form.color} onChange={e=>setForm(f=>({...f,color:e.target.value}))}>{COLORS.map(c=><option key={c} value={c}>{c}</option>)}</select></div></div>
-          <div><label className="label">Level</label><input className="input" value={form.level} onChange={e=>setForm(f=>({...f,level:e.target.value}))}/></div>
-          <div><label className="label">Assign Teacher</label><select className="input" value={form.teacher_id} onChange={e=>setForm(f=>({...f,teacher_id:e.target.value}))}><option value="">— None —</option>{teachers.map((t:any)=><option key={t.id} value={t.id}>{t.full_name}</option>)}</select></div>
-          <div className="flex justify-end gap-2 pt-2"><button className="btn" onClick={()=>setOpen(false)}>Cancel</button><button className="btn-primary" onClick={save} disabled={busy}>{busy?<Loader2 className="w-4 h-4 animate-spin"/>:null}{editing?'Save':'Add'}</button></div>
+          <div className="grid grid-cols-2 gap-3">
+            <div><label className="label">Code</label><input className="input" value={form.code} onChange={e=>setForm(f=>({...f,code:e.target.value}))} placeholder="e.g. GTR" maxLength={5}/></div>
+            <div><label className="label">Color</label><select className="input" value={form.color} onChange={e=>setForm(f=>({...f,color:e.target.value}))}>{COLORS.map(c=><option key={c} value={c}>{c}</option>)}</select></div>
+          </div>
+          <div><label className="label">Level / Description</label><input className="input" value={form.level} onChange={e=>setForm(f=>({...f,level:e.target.value}))} placeholder="e.g. Beginner–Advanced"/></div>
+          <p className="text-xs text-gray-400">After saving, use the Assign button on the card to add teachers per grade level.</p>
+          <div className="flex justify-end gap-2 pt-2">
+            <button className="btn" onClick={()=>setOpen(false)}>Cancel</button>
+            <button className="btn-primary" onClick={save} disabled={busy}>{busy?<Loader2 className="w-4 h-4 animate-spin"/>:null}{editing?'Save':'Add Subject'}</button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Assign Teacher Modal */}
+      <Modal open={teacherOpen} onClose={()=>setTeacherOpen(false)} title={`Assign Teacher — ${teacherSubject?.name||''}`} wide>
+        <div className="space-y-5">
+          {/* Current assignments */}
+          {teacherSubject && (()=>{
+            const sTeachers=(subjectTeachers||[]).filter((st:any)=>st.subject_id===teacherSubject.id)
+            return sTeachers.length>0?(
+              <div>
+                <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Current Assignments</div>
+                <div className="space-y-2">
+                  {sTeachers.map((st:any)=>(
+                    <div key={st.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-xl">
+                      <div className="flex items-center gap-3">
+                        <div className={clsx('w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold', ac(0))}>{ini(st.profiles?.full_name||'?')}</div>
+                        <div>
+                          <div className="text-sm font-medium text-gray-900">{st.profiles?.full_name}</div>
+                          <div className="flex items-center gap-1.5 mt-0.5">
+                            <span className={clsx('badge text-xs',gradeColor[st.grade_level]||gradeColor['All Levels'])}>{st.grade_level}</span>
+                            {st.is_primary&&<span className="badge bg-amber-50 text-amber-700 text-xs">★ Primary</span>}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex gap-1.5">
+                        {!st.is_primary&&(
+                          <button onClick={()=>setPrimary(st.id,teacherSubject.id,st.teacher_id)} className="btn btn-sm text-amber-600 border-amber-200 hover:bg-amber-50">
+                            ★ Set Primary
+                          </button>
+                        )}
+                        <button onClick={()=>removeTeacher(st.id,teacherSubject.id,st.teacher_id)} className="btn btn-sm btn-danger">
+                          <X className="w-3 h-3"/> Remove
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ):null
+          })()}
+
+          {/* Add new assignment */}
+          <div>
+            <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Add Teacher</div>
+            <div className="space-y-3">
+              <div>
+                <label className="label">Teacher *</label>
+                <select className="input" value={tForm.teacher_id} onChange={e=>setTForm(f=>({...f,teacher_id:e.target.value}))}>
+                  <option value="">— Select teacher —</option>
+                  {teachers.map((t:any)=><option key={t.id} value={t.id}>{t.full_name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="label">Grade Level</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {GRADE_LEVELS_LIST.map(g=>(
+                    <button
+                      key={g}
+                      type="button"
+                      onClick={()=>setTForm(f=>({...f,grade_level:g}))}
+                      className={clsx('px-3 py-2 rounded-lg border text-sm font-medium transition-all text-left',
+                        tForm.grade_level===g
+                          ? 'border-brand-500 bg-brand-50 text-brand-700'
+                          : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'
+                      )}
+                    >
+                      {g}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <label className="flex items-center gap-2.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={tForm.is_primary}
+                  onChange={e=>setTForm(f=>({...f,is_primary:e.target.checked}))}
+                  className="rounded border-gray-300 text-brand-500"
+                />
+                <div>
+                  <div className="text-sm font-medium text-gray-700">Set as primary teacher</div>
+                  <div className="text-xs text-gray-400">Primary teacher appears on class schedules and reminders</div>
+                </div>
+              </label>
+              <button
+                onClick={addTeacher}
+                disabled={!tForm.teacher_id||tBusy}
+                className="btn-primary w-full justify-center"
+              >
+                {tBusy?<Loader2 className="w-4 h-4 animate-spin"/>:<Plus className="w-4 h-4"/>}
+                Assign Teacher
+              </button>
+            </div>
+          </div>
         </div>
       </Modal>
     </div>
@@ -1510,4 +1738,309 @@ function PackagesTab({ packages, subjects, reload }: any) {
 
 export default function DashboardShell({profile}:{profile:Profile}){
   return <ErrorBoundary><DashboardShellInner profile={profile}/></ErrorBoundary>
+}
+
+// ══════════════════════════════════════════════════════════════
+// STUDENT DETAIL MODAL — month-by-month payment ledger
+// ══════════════════════════════════════════════════════════════
+function StudentDetailModal({ student, payments, subjects, onClose }: any) {
+  const [activeTab, setActiveTab] = useState<'overview'|'monthly'|'invoices'>('overview')
+
+  const totalPaid    = payments.filter((p:any) => p.status === 'paid').reduce((a:number,p:any) => a + p.amount, 0)
+  const totalPending = payments.filter((p:any) => p.status === 'pending' || p.status === 'overdue').reduce((a:number,p:any) => a + p.amount, 0)
+  const totalDiscount= payments.reduce((a:number,p:any) => a + (p.discount||0), 0)
+  const enrolledSubs = subjects.filter((s:any) =>
+    student.student_subjects?.some((ss:any) => ss.subject_id === s.id)
+  )
+
+  // Group payments by month
+  const byMonth: Record<string, any[]> = {}
+  payments.forEach((p:any) => {
+    const key = p.month_label || (p.payment_date ? new Date(p.payment_date).toLocaleString('en-IN',{month:'long',year:'numeric'}) : 'Unknown')
+    if (!byMonth[key]) byMonth[key] = []
+    byMonth[key].push(p)
+  })
+
+  // Sort months newest first
+  const months = Object.keys(byMonth).sort((a, b) => {
+    const da = new Date(byMonth[a][0]?.payment_date || '2000-01-01')
+    const db = new Date(byMonth[b][0]?.payment_date || '2000-01-01')
+    return db.getTime() - da.getTime()
+  })
+
+  const statusBadge = (s:string) => clsx('badge',
+    s==='paid'?'bg-emerald-50 text-emerald-700':
+    s==='overdue'?'bg-red-50 text-red-600':
+    s==='failed'?'bg-red-50 text-red-400':
+    'bg-amber-50 text-amber-700'
+  )
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[92vh] flex flex-col animate-fu">
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 flex-shrink-0">
+          <div className="flex items-center gap-3">
+            <div className={clsx('w-10 h-10 rounded-full flex items-center justify-center text-sm font-semibold', ac(0))}>
+              {ini(student.full_name)}
+            </div>
+            <div>
+              <h2 className="text-base font-semibold text-gray-900">{student.full_name}</h2>
+              <div className="flex items-center gap-2 mt-0.5">
+                <span className={clsx('badge text-xs', student.status==='Active'?'bg-emerald-50 text-emerald-700':'bg-gray-100 text-gray-500')}>{student.status||'Active'}</span>
+                {student.student_id_ext && <span className="text-xs text-gray-400">ID #{student.student_id_ext}</span>}
+              </div>
+            </div>
+          </div>
+          <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100">
+            <X className="w-4 h-4"/>
+          </button>
+        </div>
+
+        {/* Summary strip */}
+        <div className="grid grid-cols-4 gap-0 border-b border-gray-100 flex-shrink-0">
+          {[
+            { label:'Total Paid',    val:fmt(totalPaid),    color:'text-emerald-700', bg:'bg-emerald-50/60' },
+            { label:'Pending',       val:fmt(totalPending), color:'text-amber-700',   bg:'bg-amber-50/60' },
+            { label:'Discounts',     val:fmt(totalDiscount),color:'text-blue-700',    bg:'bg-blue-50/60' },
+            { label:'Transactions',  val:String(payments.length), color:'text-gray-700', bg:'bg-gray-50/60' },
+          ].map(s => (
+            <div key={s.label} className={clsx('px-5 py-3', s.bg)}>
+              <div className="text-xs text-gray-500 mb-0.5">{s.label}</div>
+              <div className={clsx('text-lg font-bold', s.color)}>{s.val}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Tabs */}
+        <div className="flex border-b border-gray-100 px-2 flex-shrink-0">
+          {([
+            { id:'overview',  label:'Overview' },
+            { id:'monthly',   label:`Monthly (${months.length} months)` },
+            { id:'invoices',  label:`All Transactions (${payments.length})` },
+          ] as const).map(t => (
+            <button key={t.id} onClick={()=>setActiveTab(t.id)}
+              className={clsx('px-4 py-2.5 text-sm font-medium border-b-2 transition-colors',
+                activeTab===t.id?'border-brand-500 text-brand-600':'border-transparent text-gray-400 hover:text-gray-600'
+              )}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Content */}
+        <div className="overflow-y-auto flex-1 px-6 py-5">
+
+          {/* ── OVERVIEW TAB ── */}
+          {activeTab === 'overview' && (
+            <div className="space-y-5">
+              {/* Profile info */}
+              <div>
+                <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Profile</div>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    ['Email',       student.email],
+                    ['Phone',       student.phone],
+                    ['Date of Birth', student.date_of_birth],
+                    ['Gender',      student.gender],
+                    ['City',        student.city],
+                    ['Area',        student.area],
+                    ['Nationality', student.nationality],
+                    ['Guardian',    student.guardian_name],
+                    ['Guardian Ph', student.guardian_phone],
+                    ['Discipline',  student.discipline],
+                    ['Source',      student.referral_source],
+                    ['Joined',      student.joined_date],
+                  ].filter(([,v]) => v).map(([k,v]) => (
+                    <div key={k} className="bg-gray-50 rounded-lg px-3 py-2">
+                      <div className="text-xs text-gray-400">{k}</div>
+                      <div className="text-sm font-medium text-gray-800">{v}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Enrolled subjects */}
+              <div>
+                <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Enrolled Subjects</div>
+                {enrolledSubs.length === 0
+                  ? <div className="text-sm text-gray-300">No subjects enrolled</div>
+                  : <div className="flex flex-wrap gap-2">
+                      {enrolledSubs.map((s:any) => (
+                        <span key={s.id} className={clsx('badge text-sm px-3 py-1', colorBadge[s.color]||colorBadge.violet)}>{s.name}</span>
+                      ))}
+                    </div>
+                }
+              </div>
+
+              {/* Recent payments preview */}
+              <div>
+                <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Recent Payments</div>
+                {payments.slice(0, 5).map((p:any) => (
+                  <div key={p.id} className="flex items-center justify-between py-2.5 border-b border-gray-50 last:border-0">
+                    <div>
+                      <div className="text-sm font-medium text-gray-800">{p.subjects?.name || p.description?.split('|')[0]?.trim() || 'Payment'}</div>
+                      <div className="text-xs text-gray-400">{p.month_label} · {p.payment_date||'—'}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-sm font-semibold">{fmt(p.amount)}</div>
+                      <span className={statusBadge(p.status)}>{p.status}</span>
+                    </div>
+                  </div>
+                ))}
+                {payments.length > 5 && (
+                  <button onClick={()=>setActiveTab('monthly')} className="text-xs text-brand-500 hover:text-brand-700 mt-2">
+                    View all {payments.length} transactions →
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ── MONTHLY TAB ── */}
+          {activeTab === 'monthly' && (
+            <div className="space-y-4">
+              {months.length === 0
+                ? <div className="text-center py-10 text-gray-300">No payment history</div>
+                : months.map(month => {
+                    const mPayments = byMonth[month]
+                    const mPaid    = mPayments.filter((p:any)=>p.status==='paid').reduce((a:number,p:any)=>a+p.amount,0)
+                    const mPending = mPayments.filter((p:any)=>p.status!=='paid'&&p.status!=='failed').reduce((a:number,p:any)=>a+p.amount,0)
+                    const mDisc    = mPayments.reduce((a:number,p:any)=>a+(p.discount||0),0)
+                    const allPaid  = mPayments.every((p:any)=>p.status==='paid')
+                    const anyOverdue = mPayments.some((p:any)=>p.status==='overdue')
+
+                    return (
+                      <div key={month} className="card overflow-hidden">
+                        {/* Month header */}
+                        <div className={clsx('flex items-center justify-between px-4 py-3 border-b border-gray-100',
+                          allPaid?'bg-emerald-50/60':anyOverdue?'bg-red-50/50':'bg-amber-50/40'
+                        )}>
+                          <div className="flex items-center gap-2">
+                            <span className="font-semibold text-gray-900 text-sm">{month}</span>
+                            <span className={clsx('badge text-xs',
+                              allPaid?'bg-emerald-100 text-emerald-700':
+                              anyOverdue?'bg-red-100 text-red-700':'bg-amber-100 text-amber-700'
+                            )}>
+                              {allPaid?'✓ Paid':anyOverdue?'Overdue':'Pending'}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-4 text-xs">
+                            {mDisc>0 && <span className="text-blue-600">Disc: {fmt(mDisc)}</span>}
+                            {mPending>0 && <span className="text-amber-700">Due: {fmt(mPending)}</span>}
+                            <span className={clsx('font-bold text-sm', allPaid?'text-emerald-700':'text-gray-700')}>
+                              {fmt(mPaid + mPending)}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Month rows */}
+                        <div>
+                          {mPayments.map((p:any) => (
+                            <div key={p.id} className="flex items-start justify-between px-4 py-3 border-b border-gray-50 last:border-0 hover:bg-gray-50/50">
+                              <div className="flex-1">
+                                <div className="text-sm font-medium text-gray-800">
+                                  {p.subjects?.name || p.description?.split('|')[0]?.replace(/\d+x a week-\s*/i,'').trim() || 'Payment'}
+                                </div>
+                                <div className="flex items-center gap-3 mt-0.5 flex-wrap">
+                                  {p.invoice_number && <span className="text-xs text-gray-400">Invoice #{p.invoice_number}</span>}
+                                  {p.receipt_number && <span className="text-xs text-gray-400">Receipt #{p.receipt_number}</span>}
+                                  {p.payment_date && <span className="text-xs text-gray-400">{p.payment_date}</span>}
+                                  {p.mode_of_payment && <span className="text-xs text-gray-400">{p.mode_of_payment}</span>}
+                                  {p.recorded_by && <span className="text-xs text-gray-400">by {p.recorded_by}</span>}
+                                </div>
+                                {p.description && p.description !== p.subjects?.name && (
+                                  <div className="text-xs text-gray-400 mt-0.5 italic">{p.description?.slice(0,80)}</div>
+                                )}
+                              </div>
+                              <div className="text-right ml-4 flex-shrink-0">
+                                <div className="font-semibold text-sm">{fmt(p.amount)}</div>
+                                {p.discount>0 && <div className="text-xs text-blue-600">-{fmt(p.discount)} disc</div>}
+                                <span className={statusBadge(p.status)}>{p.status}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  })
+              }
+
+              {/* Annual summary */}
+              {months.length > 0 && (
+                <div className="card p-4 bg-gray-50 border-gray-200">
+                  <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Lifetime Summary</div>
+                  <div className="grid grid-cols-3 gap-4 text-center">
+                    <div><div className="text-xl font-bold text-emerald-700">{fmt(totalPaid)}</div><div className="text-xs text-gray-400">Total Paid</div></div>
+                    <div><div className="text-xl font-bold text-blue-600">{fmt(totalDiscount)}</div><div className="text-xs text-gray-400">Total Discounts</div></div>
+                    <div><div className="text-xl font-bold text-gray-700">{months.length}</div><div className="text-xs text-gray-400">Months Active</div></div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── INVOICES / ALL TRANSACTIONS TAB ── */}
+          {activeTab === 'invoices' && (
+            <div>
+              {payments.length === 0
+                ? <div className="text-center py-10 text-gray-300">No transactions found</div>
+                : (
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr>
+                        <th className="th">Date</th>
+                        <th className="th">Invoice</th>
+                        <th className="th">Subject</th>
+                        <th className="th">Description</th>
+                        <th className="th">Mode</th>
+                        <th className="th text-right">Discount</th>
+                        <th className="th text-right">Amount</th>
+                        <th className="th">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {payments.map((p:any) => (
+                        <tr key={p.id} className={clsx('hover:bg-gray-50/50', p.status==='failed'&&'opacity-40')}>
+                          <td className="td text-gray-500 whitespace-nowrap">{p.payment_date||'—'}</td>
+                          <td className="td text-gray-400 whitespace-nowrap">
+                            {p.invoice_number && <div>Inv #{p.invoice_number}</div>}
+                            {p.receipt_number && <div className="text-xs">Rec #{p.receipt_number}</div>}
+                          </td>
+                          <td className="td">
+                            {p.subjects && (
+                              <span className={clsx('badge', colorBadge[p.subjects.color]||colorBadge.violet)}>
+                                {p.subjects.name}
+                              </span>
+                            )}
+                          </td>
+                          <td className="td text-gray-400 max-w-[160px]">
+                            <div className="truncate text-xs">{p.description?.split('|')[0]?.replace(/\d+x a week-\s*/i,'').trim()||'—'}</div>
+                            {p.recorded_by && <div className="text-xs text-gray-300">by {p.recorded_by}</div>}
+                          </td>
+                          <td className="td text-gray-400">{p.mode_of_payment||'—'}</td>
+                          <td className="td text-right text-blue-600">{p.discount>0?`-${fmt(p.discount)}`:''}</td>
+                          <td className="td text-right font-semibold">{fmt(p.amount)}</td>
+                          <td className="td"><span className={statusBadge(p.status)}>{p.status}</span></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr className="bg-gray-50">
+                        <td colSpan={5} className="td text-right text-xs font-medium text-gray-500">Totals</td>
+                        <td className="td text-right text-blue-600 font-semibold">{totalDiscount>0?`-${fmt(totalDiscount)}`:''}</td>
+                        <td className="td text-right font-bold text-emerald-700">{fmt(totalPaid)}</td>
+                        <td className="td"></td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                )
+              }
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
 }
