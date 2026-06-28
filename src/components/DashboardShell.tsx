@@ -387,46 +387,29 @@ function HomeTab({profile,perms,students,profiles,payments,schedules,subjects,le
 function StudentsTab({students,subjects,packages,fees,reload}:any){
   const supabase=sb()
   const [q,setQ]=useState('')
-  const [open,setOpen]=useState(false)
+  const [enrollOpen,setEnrollOpen]=useState(false)
   const [importOpen,setImportOpen]=useState(false)
   const [detailStudent,setDetailStudent]=useState<any>(null)
   const [studentPayments,setStudentPayments]=useState<any[]>([])
   const [editing,setEditing]=useState<any>(null)
-  const [form,setForm]=useState({full_name:'',email:'',phone:'',joined_date:'',status:'Active',subject_ids:[] as string[]})
   const [busy,setBusy]=useState(false)
   const [importResult,setImportResult]=useState('')
 
   async function viewStudent(s:any){
     setDetailStudent(s)
     setStudentPayments([])
-    // Fetch payments AND invoice payments (matched by student_id OR student_id_ext)
     const [{data:d1},{data:d2}]=await Promise.all([
       supabase.from('payments').select('*, subjects(name,color)').eq('student_id',s.id).order('payment_date',{ascending:false}),
       s.student_id_ext ? supabase.from('payments').select('*, subjects(name,color)').eq('student_id_ext',s.student_id_ext).is('student_id',null).order('payment_date',{ascending:false}) : Promise.resolve({data:[]}),
     ])
     const all=[...(d1||[]),...(d2||[])]
-    // Deduplicate by invoice_number
     const seen=new Set<string>()
-    const deduped=all.filter(p=>{
-      const key=p.invoice_number||p.id
-      if(seen.has(key))return false
-      seen.add(key); return true
-    })
+    const deduped=all.filter(p=>{const key=p.invoice_number||p.id;if(seen.has(key))return false;seen.add(key);return true})
     setStudentPayments(deduped)
   }
 
-  const openAdd=()=>{setEditing(null);setForm({full_name:'',email:'',phone:'',joined_date:new Date().toISOString().slice(0,10),status:'Active',subject_ids:[]});setOpen(true)}
-  const openEdit=(s:any)=>{setEditing(s);setForm({full_name:s.full_name,email:s.email||'',phone:s.phone||'',joined_date:s.joined_date||'',status:s.status||'Active',subject_ids:(s.student_subjects||[]).map((x:any)=>x.subject_id)});setOpen(true)}
-
-  async function save(){
-    if(!form.full_name.trim())return;setBusy(true)
-    const payload={full_name:form.full_name.trim(),email:form.email||null,phone:form.phone||null,joined_date:form.joined_date||null,status:form.status}
-    let sid=editing?.id
-    if(editing){await supabase.from('students').update(payload).eq('id',sid)}
-    else{const{data}=await supabase.from('students').insert(payload).select().single();sid=data?.id}
-    if(sid){await supabase.from('student_subjects').delete().eq('student_id',sid);if(form.subject_ids.length)await supabase.from('student_subjects').insert(form.subject_ids.map(s=>({student_id:sid,subject_id:s})))}
-    setBusy(false);setOpen(false);reload()
-  }
+  function openAdd(){setEditing(null);setEnrollOpen(true)}
+  function openEdit(s:any){setEditing(s);setEnrollOpen(true)}
 
   async function handleImport(rows:any[]){
     setBusy(true);let ok=0,fail=0,skip=0
@@ -447,7 +430,10 @@ function StudentsTab({students,subjects,packages,fees,reload}:any){
     <div className="animate-fu">
       <div className="flex items-center justify-between mb-5">
         <div><h1 className="text-xl font-semibold text-gray-900">Students</h1><p className="text-sm text-gray-400 mt-0.5">{students.length} enrolled</p></div>
-        <div className="flex gap-2"><button onClick={()=>setImportOpen(true)} className="btn"><Upload className="w-4 h-4"/> Import CSV</button><button onClick={openAdd} className="btn-primary"><Plus className="w-4 h-4"/> Add Student</button></div>
+        <div className="flex gap-2">
+          <button onClick={()=>setImportOpen(true)} className="btn"><Upload className="w-4 h-4"/> Import CSV</button>
+          <button onClick={openAdd} className="btn-primary"><Plus className="w-4 h-4"/> Enroll Student</button>
+        </div>
       </div>
       {importResult&&<div className="mb-4 px-4 py-2.5 rounded-lg bg-emerald-50 text-emerald-700 text-sm border border-emerald-100">{importResult}</div>}
       <div className="card">
@@ -478,7 +464,6 @@ function StudentsTab({students,subjects,packages,fees,reload}:any){
         </div>
       </div>
 
-      {/* Student detail + month-by-month payment modal */}
       {detailStudent&&<StudentDetailModal
         student={detailStudent}
         payments={studentPayments}
@@ -489,19 +474,14 @@ function StudentsTab({students,subjects,packages,fees,reload}:any){
         reload={reload}
       />}
 
-      <Modal open={open} onClose={()=>setOpen(false)} title={editing?'Edit Student':'Add Student'}>
-        <div className="space-y-3">
-          <div><label className="label">Full Name *</label><input className="input" value={form.full_name} onChange={e=>setForm(f=>({...f,full_name:e.target.value}))}/></div>
-          <div><label className="label">Email</label><input className="input" type="email" value={form.email} onChange={e=>setForm(f=>({...f,email:e.target.value}))}/></div>
-          <div><label className="label">Phone</label><input className="input" value={form.phone} onChange={e=>setForm(f=>({...f,phone:e.target.value}))}/></div>
-          <div className="grid grid-cols-2 gap-3">
-            <div><label className="label">Joined Date</label><input className="input" type="date" value={form.joined_date} onChange={e=>setForm(f=>({...f,joined_date:e.target.value}))}/></div>
-            <div><label className="label">Status</label><select className="input" value={form.status} onChange={e=>setForm(f=>({...f,status:e.target.value}))}><option>Active</option><option>Inactive</option></select></div>
-          </div>
-          <div><label className="label">Subjects</label><div className="space-y-1.5 mt-1">{subjects.map((s:any)=><label key={s.id} className="flex items-center gap-2 text-sm cursor-pointer"><input type="checkbox" checked={form.subject_ids.includes(s.id)} onChange={()=>setForm(f=>({...f,subject_ids:f.subject_ids.includes(s.id)?f.subject_ids.filter(x=>x!==s.id):[...f.subject_ids,s.id]}))} className="rounded border-gray-300"/>{s.name}</label>)}</div></div>
-          <div className="flex justify-end gap-2 pt-2"><button className="btn" onClick={()=>setOpen(false)}>Cancel</button><button className="btn-primary" onClick={save} disabled={busy}>{busy?<Loader2 className="w-4 h-4 animate-spin"/>:null}{editing?'Save':'Add'}</button></div>
-        </div>
-      </Modal>
+      {enrollOpen&&<EnrollmentModal
+        student={editing}
+        subjects={subjects}
+        packages={packages}
+        onClose={()=>{setEnrollOpen(false);setEditing(null)}}
+        reload={reload}
+      />}
+
       <Modal open={importOpen} onClose={()=>setImportOpen(false)} title="Import Students from CSV" wide>
         <ImportPanel type="students" onImport={handleImport}/>
       </Modal>
@@ -3508,6 +3488,567 @@ function AttendanceTab({ schedules, subjects, students, profiles, profile, atten
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════
+// ENROLLMENT MODAL — multi-step full enrollment form
+// ══════════════════════════════════════════════════════════════
+const ENROLLMENT_STEPS = ['Personal','Guardian & Medical','Instrument & Package','Invoice'] as const
+type EnrollStep = typeof ENROLLMENT_STEPS[number]
+
+function EnrollmentModal({ student, subjects, packages, onClose, reload }: any) {
+  const supabase = sb()
+  const isEdit = !!student
+  const [step, setStep] = useState<EnrollStep>('Personal')
+  const [busy, setBusy] = useState(false)
+  const [savedStudent, setSavedStudent] = useState<any>(student || null)
+  const [invoiceSent, setInvoiceSent] = useState(false)
+  const [emailResult, setEmailResult] = useState('')
+
+  const [p, setP] = useState({
+    // Personal
+    full_name:              student?.full_name || '',
+    email:                  student?.email || '',
+    phone:                  student?.phone || '',
+    date_of_birth:          student?.date_of_birth || '',
+    age:                    student?.age || '',
+    gender:                 student?.gender || '',
+    nationality:            student?.nationality || '',
+    city:                   student?.city || '',
+    area:                   student?.area || '',
+    status:                 student?.status || 'Active',
+    joined_date:            student?.joined_date || new Date().toISOString().slice(0,10),
+    referral_source:        student?.referral_source || '',
+    // Guardian
+    guardian_name:          student?.guardian_name || '',
+    guardian_phone:         student?.guardian_phone || '',
+    guardian_email:         student?.guardian_email || '',
+    emergency_contact_name: student?.emergency_contact_name || '',
+    emergency_contact_phone:student?.emergency_contact_phone || '',
+    // Medical
+    medical_conditions:     student?.medical_conditions || '',
+    allergies:              student?.allergies || '',
+    notes:                  student?.notes || '',
+    // Instrument
+    subject_ids:            (student?.student_subjects||[]).map((x:any)=>x.subject_id) as string[],
+    grade_level:            'Beginner–Grade 2',
+    // Invoice
+    package_id:             '',
+    invoice_amount:         '',
+    invoice_discount:       '',
+    invoice_month:          new Date().toLocaleString('en-IN',{month:'long',year:'numeric'}),
+    invoice_mode:           'UPI',
+    invoice_status:         'pending' as 'pending'|'paid',
+    invoice_due:            new Date(Date.now()+7*86400000).toISOString().slice(0,10),
+    invoice_notes:          '',
+  })
+
+  const sf = (k: string, v: any) => setP((prev:any) => ({...prev, [k]: v}))
+
+  const stepIdx = ENROLLMENT_STEPS.indexOf(step)
+  const canNext = stepIdx < ENROLLMENT_STEPS.length - 1
+
+  // Save student on step 1 completion
+  async function savePersonal() {
+    if (!p.full_name.trim()) return
+    setBusy(true)
+    const payload: any = {
+      full_name: p.full_name.trim(), email: p.email||null, phone: p.phone||null,
+      date_of_birth: p.date_of_birth||null, age: p.age||null, gender: p.gender||null,
+      nationality: p.nationality||null, city: p.city||null, area: p.area||null,
+      status: p.status, joined_date: p.joined_date||null, referral_source: p.referral_source||null,
+    }
+    let sid = savedStudent?.id
+    if (isEdit && sid) {
+      await supabase.from('students').update(payload).eq('id', sid)
+    } else {
+      const { data } = await supabase.from('students').insert(payload).select().single()
+      sid = data?.id
+      setSavedStudent(data)
+    }
+    setBusy(false)
+    if (sid) setStep('Guardian & Medical')
+  }
+
+  async function saveGuardianMedical() {
+    if (!savedStudent?.id) return
+    setBusy(true)
+    await supabase.from('students').update({
+      guardian_name: p.guardian_name||null,
+      guardian_phone: p.guardian_phone||null,
+      guardian_email: p.guardian_email||null,
+      emergency_contact_name: p.emergency_contact_name||null,
+      emergency_contact_phone: p.emergency_contact_phone||null,
+      medical_conditions: p.medical_conditions||null,
+      allergies: p.allergies||null,
+      notes: p.notes||null,
+    }).eq('id', savedStudent.id)
+    setBusy(false)
+    setStep('Instrument & Package')
+  }
+
+  async function saveInstrument() {
+    if (!savedStudent?.id) return
+    setBusy(true)
+    const sid = savedStudent.id
+    await supabase.from('student_subjects').delete().eq('student_id', sid)
+    if (p.subject_ids.length) {
+      await supabase.from('student_subjects').insert(
+        p.subject_ids.map((subId: string) => ({ student_id: sid, subject_id: subId, grade_level: p.grade_level }))
+      )
+    }
+    setBusy(false)
+    setStep('Invoice')
+  }
+
+  async function saveAndSendInvoice(sendEmail: boolean) {
+    if (!savedStudent?.id) { reload(); onClose(); return }
+    setBusy(true)
+
+    const selectedPkg = packages.find((pkg: any) => pkg.id === p.package_id)
+    const selectedSub = subjects.find((s: any) => p.subject_ids.includes(s.id))
+    const rawAmount = parseFloat(p.invoice_amount) || 0
+    const discountAmt = parseFloat(p.invoice_discount) || 0
+    const finalAmount = Math.max(0, rawAmount - discountAmt)
+    const invoiceNo = `INV-${Date.now().toString().slice(-6)}`
+
+    if (rawAmount > 0) {
+      await supabase.from('payments').insert({
+        student_id:      savedStudent.id,
+        subject_id:      p.subject_ids[0] || null,
+        amount:          finalAmount,
+        discount:        discountAmt || null,
+        status:          p.invoice_status,
+        payment_date:    p.invoice_status === 'paid' ? new Date().toISOString().slice(0,10) : null,
+        month_label:     p.invoice_month,
+        invoice_number:  invoiceNo.replace('INV-',''),
+        mode_of_payment: p.invoice_mode,
+        description:     selectedPkg?.name || selectedSub?.name || 'Tuition',
+        student_name:    savedStudent.full_name,
+        student_email:   savedStudent.email,
+        student_phone:   savedStudent.phone,
+        recorded_by:     'Academy',
+      })
+    }
+
+    if (sendEmail && savedStudent.email && rawAmount > 0) {
+      const issueDate = new Date().toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'})
+      const dueDate = new Date(p.invoice_due).toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'})
+      const r = await fetch('/api/email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'invoice',
+          studentEmail: savedStudent.email,
+          studentName: savedStudent.full_name,
+          invoiceData: {
+            invoiceNo, subjectName: selectedSub?.name || 'Tuition',
+            pkgName: selectedPkg?.name || null,
+            monthLabel: p.invoice_month, rawAmount, discountAmt, finalAmount,
+            issueDate, dueDate, status: p.invoice_status,
+            notes: p.invoice_notes || null,
+            upiId: 'truetoneacademy@sbi',
+            academyName: 'True Tone Music Academy',
+            academyAddress: 'Hoodi, Bengaluru',
+            academyPhone: '+91 97312 70069',
+            studentPhone: savedStudent.phone,
+            studentIdExt: savedStudent.student_id_ext,
+          }
+        })
+      })
+      const d = await r.json()
+      setEmailResult(d.ok ? `✓ Invoice emailed to ${savedStudent.email}` : `Email error: ${d.error}`)
+      setInvoiceSent(true)
+    }
+
+    setBusy(false)
+    reload()
+    if (!sendEmail || !savedStudent.email) onClose()
+  }
+
+  const subjectPackages = packages.filter((pkg: any) =>
+    p.subject_ids.includes(pkg.subject_id) &&
+    (pkg.grade_level === p.grade_level || pkg.grade_level === 'All Levels') &&
+    pkg.is_active
+  )
+
+  const selectedPkg = packages.find((pkg: any) => pkg.id === p.package_id)
+  const rawAmount = parseFloat(p.invoice_amount) || 0
+  const discountAmt = parseFloat(p.invoice_discount) || 0
+  const finalAmount = Math.max(0, rawAmount - discountAmt)
+
+  const MONTHS_OPTS = Array.from({length:12},(_,i)=>{const d=new Date();d.setMonth(d.getMonth()-1+i);return d.toLocaleString('en-IN',{month:'long',year:'numeric'})})
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[94vh] flex flex-col">
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 flex-shrink-0">
+          <div>
+            <h2 className="text-base font-semibold text-gray-900">{isEdit ? 'Edit Student' : 'Enroll New Student'}</h2>
+            {savedStudent && <div className="text-xs text-gray-400 mt-0.5">{savedStudent.full_name}</div>}
+          </div>
+          <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100"><X className="w-4 h-4"/></button>
+        </div>
+
+        {/* Step indicators */}
+        <div className="flex border-b border-gray-100 px-6 flex-shrink-0">
+          {ENROLLMENT_STEPS.map((s, i) => (
+            <div key={s} className="flex items-center">
+              <button
+                onClick={() => { if (savedStudent || i === 0) setStep(s) }}
+                className={clsx('px-3 py-2.5 text-xs font-medium border-b-2 transition-colors flex items-center gap-1.5',
+                  step === s ? 'border-brand-500 text-brand-600' : 'border-transparent text-gray-400',
+                  (savedStudent || i === 0) ? 'cursor-pointer hover:text-gray-600' : 'cursor-not-allowed opacity-40'
+                )}
+              >
+                <span className={clsx('w-4 h-4 rounded-full text-xs flex items-center justify-center font-bold',
+                  step === s ? 'bg-brand-500 text-white' :
+                  ENROLLMENT_STEPS.indexOf(step) > i ? 'bg-emerald-500 text-white' : 'bg-gray-200 text-gray-500'
+                )}>{ENROLLMENT_STEPS.indexOf(step) > i ? '✓' : i+1}</span>
+                {s}
+              </button>
+              {i < ENROLLMENT_STEPS.length - 1 && <div className="w-4 h-px bg-gray-200 mx-1"/>}
+            </div>
+          ))}
+        </div>
+
+        {/* Content */}
+        <div className="overflow-y-auto flex-1 px-6 py-5">
+
+          {/* ── STEP 1: Personal ── */}
+          {step === 'Personal' && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="col-span-2">
+                  <label className="label">Full Name *</label>
+                  <input className="input" value={p.full_name} onChange={e=>sf('full_name',e.target.value)} placeholder="e.g. Arjun Mehta" autoFocus/>
+                </div>
+                <div>
+                  <label className="label">Email</label>
+                  <input className="input" type="email" value={p.email} onChange={e=>sf('email',e.target.value)} placeholder="student@email.com"/>
+                </div>
+                <div>
+                  <label className="label">Phone</label>
+                  <input className="input" value={p.phone} onChange={e=>sf('phone',e.target.value)} placeholder="+91 98765 43210"/>
+                </div>
+                <div>
+                  <label className="label">Date of Birth</label>
+                  <input className="input" type="date" value={p.date_of_birth} onChange={e=>sf('date_of_birth',e.target.value)}/>
+                </div>
+                <div>
+                  <label className="label">Age</label>
+                  <input className="input" type="number" value={p.age} onChange={e=>sf('age',e.target.value)} placeholder="e.g. 12"/>
+                </div>
+                <div>
+                  <label className="label">Gender</label>
+                  <select className="input" value={p.gender} onChange={e=>sf('gender',e.target.value)}>
+                    <option value="">— Select —</option>
+                    <option>Male</option><option>Female</option><option>Other</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="label">Nationality</label>
+                  <input className="input" value={p.nationality} onChange={e=>sf('nationality',e.target.value)} placeholder="e.g. Indian"/>
+                </div>
+                <div>
+                  <label className="label">City</label>
+                  <input className="input" value={p.city} onChange={e=>sf('city',e.target.value)} placeholder="e.g. Bengaluru"/>
+                </div>
+                <div>
+                  <label className="label">Area / Locality</label>
+                  <input className="input" value={p.area} onChange={e=>sf('area',e.target.value)} placeholder="e.g. Hoodi"/>
+                </div>
+                <div>
+                  <label className="label">Referral Source</label>
+                  <select className="input" value={p.referral_source} onChange={e=>sf('referral_source',e.target.value)}>
+                    <option value="">— Select —</option>
+                    {['Instagram','Facebook','Google','Friend/Family','Walk-in','WhatsApp','Other'].map(s=><option key={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="label">Enrolment Date</label>
+                  <input className="input" type="date" value={p.joined_date} onChange={e=>sf('joined_date',e.target.value)}/>
+                </div>
+                <div>
+                  <label className="label">Status</label>
+                  <select className="input" value={p.status} onChange={e=>sf('status',e.target.value)}>
+                    <option>Active</option><option>Inactive</option><option>Trial</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── STEP 2: Guardian & Medical ── */}
+          {step === 'Guardian & Medical' && (
+            <div className="space-y-5">
+              <div>
+                <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Guardian Details</div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="col-span-2">
+                    <label className="label">Guardian / Parent Name</label>
+                    <input className="input" value={p.guardian_name} onChange={e=>sf('guardian_name',e.target.value)} placeholder="Parent or guardian full name"/>
+                  </div>
+                  <div>
+                    <label className="label">Guardian Phone</label>
+                    <input className="input" value={p.guardian_phone} onChange={e=>sf('guardian_phone',e.target.value)}/>
+                  </div>
+                  <div>
+                    <label className="label">Guardian Email</label>
+                    <input className="input" type="email" value={p.guardian_email} onChange={e=>sf('guardian_email',e.target.value)}/>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Emergency Contact</div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="label">Contact Name</label>
+                    <input className="input" value={p.emergency_contact_name} onChange={e=>sf('emergency_contact_name',e.target.value)} placeholder="Name (if different from guardian)"/>
+                  </div>
+                  <div>
+                    <label className="label">Contact Phone</label>
+                    <input className="input" value={p.emergency_contact_phone} onChange={e=>sf('emergency_contact_phone',e.target.value)}/>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Medical Information</div>
+                <div className="space-y-3">
+                  <div>
+                    <label className="label">Medical Conditions</label>
+                    <textarea
+                      className="input min-h-[72px] resize-none"
+                      value={p.medical_conditions}
+                      onChange={e=>sf('medical_conditions',e.target.value)}
+                      placeholder="List any relevant medical conditions, disabilities, or learning differences we should be aware of…"
+                    />
+                  </div>
+                  <div>
+                    <label className="label">Allergies</label>
+                    <input className="input" value={p.allergies} onChange={e=>sf('allergies',e.target.value)} placeholder="e.g. Peanuts, Penicillin, Dust — or None"/>
+                  </div>
+                  <div>
+                    <label className="label">Additional Notes</label>
+                    <textarea
+                      className="input min-h-[56px] resize-none"
+                      value={p.notes}
+                      onChange={e=>sf('notes',e.target.value)}
+                      placeholder="Any other information for teachers or staff…"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── STEP 3: Instrument & Package ── */}
+          {step === 'Instrument & Package' && (
+            <div className="space-y-5">
+              <div>
+                <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Select Instrument(s) *</div>
+                <div className="grid grid-cols-2 gap-2">
+                  {subjects.map((s:any) => (
+                    <button key={s.id} type="button"
+                      onClick={()=>sf('subject_ids', p.subject_ids.includes(s.id) ? p.subject_ids.filter((x:string)=>x!==s.id) : [...p.subject_ids, s.id])}
+                      className={clsx('px-3 py-2.5 rounded-xl border text-sm font-medium text-left transition-all flex items-center gap-2',
+                        p.subject_ids.includes(s.id) ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'
+                      )}>
+                      <span className={clsx('badge text-xs', colorBadge[s.color]||colorBadge.violet)}>{s.code}</span>
+                      {s.name}
+                      {p.subject_ids.includes(s.id) && <span className="ml-auto text-brand-500">✓</span>}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Grade Level</div>
+                <div className="flex gap-2 flex-wrap">
+                  {['Beginner–Grade 2','Grade 3–5','Grade 6–8'].map(g=>(
+                    <button key={g} type="button"
+                      onClick={()=>{ sf('grade_level',g); sf('package_id',''); sf('invoice_amount','') }}
+                      className={clsx('px-3 py-1.5 rounded-lg border text-sm font-medium transition-all',
+                        p.grade_level===g ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-gray-200 text-gray-500 hover:border-gray-300'
+                      )}>
+                      {g}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {p.subject_ids.length > 0 && subjectPackages.length > 0 && (
+                <div>
+                  <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Select Package</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {subjectPackages.sort((a:any,b:any)=>(a.months||1)-(b.months||1)||(a.classes_pm-b.classes_pm)).map((pkg:any)=>(
+                      <button key={pkg.id} type="button"
+                        onClick={()=>{ sf('package_id',pkg.id); sf('invoice_amount',String(pkg.price)) }}
+                        className={clsx('p-3 rounded-xl border text-left transition-all',
+                          p.package_id===pkg.id ? 'border-brand-500 bg-brand-50' : 'border-gray-200 bg-white hover:border-gray-300'
+                        )}>
+                        <div className="flex items-center gap-1.5 mb-1.5">
+                          <span className="badge text-xs bg-gray-100 text-gray-600">{pkg.classes_pm} cls/mo</span>
+                          {(pkg.months||1)>1 && <span className={clsx('badge text-xs',(pkg.months||1)===6?'bg-rose-50 text-rose-700':'bg-teal-50 text-teal-700')}>{pkg.months}mo · {(pkg.months||1)===6?'15%':'10%'} off</span>}
+                        </div>
+                        <div className="text-base font-bold text-gray-900">{pkg.months>1?`₹${pkg.price.toLocaleString('en-IN')} total`:`₹${pkg.price.toLocaleString('en-IN')}/mo`}</div>
+                        {pkg.months>1 && <div className="text-xs text-emerald-600">= ₹{Math.round(pkg.price/pkg.months).toLocaleString('en-IN')}/mo</div>}
+                        <div className="text-xs text-gray-400 mt-0.5">{pkg.duration_min} min · ₹{Math.round(pkg.price/(pkg.classes_pm*(pkg.months||1))).toLocaleString('en-IN')}/class</div>
+                      </button>
+                    ))}
+                    <button type="button"
+                      onClick={()=>{ sf('package_id',''); sf('invoice_amount','') }}
+                      className={clsx('p-3 rounded-xl border text-left transition-all',
+                        !p.package_id ? 'border-brand-500 bg-brand-50' : 'border-gray-200 bg-white hover:border-gray-300'
+                      )}>
+                      <div className="text-sm font-semibold text-gray-700">Custom amount</div>
+                      <div className="text-xs text-gray-400">Enter manually in invoice step</div>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── STEP 4: Invoice ── */}
+          {step === 'Invoice' && (
+            <div className="space-y-4">
+              {invoiceSent ? (
+                <div className="text-center py-8">
+                  <div className="w-14 h-14 rounded-full bg-emerald-100 flex items-center justify-center mx-auto mb-3">
+                    <CheckCircle className="w-7 h-7 text-emerald-600"/>
+                  </div>
+                  <h3 className="font-semibold text-gray-900 mb-1">Enrolment Complete!</h3>
+                  <p className="text-sm text-gray-500">{savedStudent?.full_name} has been enrolled successfully.</p>
+                  {emailResult && <p className={clsx('text-sm mt-2', emailResult.startsWith('✓')?'text-emerald-600':'text-red-500')}>{emailResult}</p>}
+                  <button onClick={onClose} className="btn-primary mt-5 mx-auto">Done</button>
+                </div>
+              ) : (
+                <>
+                  <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3 text-sm text-emerald-800">
+                    <strong>{savedStudent?.full_name}</strong> enrolled · {p.subject_ids.length} instrument(s) · {p.grade_level}
+                    {selectedPkg && <span> · {selectedPkg.name}</span>}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="label">Amount (₹)</label>
+                      <input className="input text-lg font-semibold" type="number" value={p.invoice_amount}
+                        onChange={e=>sf('invoice_amount',e.target.value)} placeholder="e.g. 2200"/>
+                    </div>
+                    <div>
+                      <label className="label">Discount (₹)</label>
+                      <input className="input" type="number" value={p.invoice_discount}
+                        onChange={e=>sf('invoice_discount',e.target.value)} placeholder="0"/>
+                    </div>
+                  </div>
+
+                  {rawAmount > 0 && (
+                    <div className={clsx('flex justify-between items-center px-4 py-2.5 rounded-xl text-sm',
+                      discountAmt>0?'bg-blue-50 border border-blue-100':'bg-emerald-50 border border-emerald-100'
+                    )}>
+                      <span className="text-gray-600">{discountAmt>0?<><span className="text-blue-600">{rawAmount.toLocaleString('en-IN')} - {discountAmt.toLocaleString('en-IN')} = </span></>:null}Final amount:</span>
+                      <span className="font-bold text-lg text-emerald-700">₹{finalAmount.toLocaleString('en-IN')}</span>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="label">For Month</label>
+                      <select className="input" value={p.invoice_month} onChange={e=>sf('invoice_month',e.target.value)}>
+                        {MONTHS_OPTS.map(m=><option key={m}>{m}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="label">Payment Mode</label>
+                      <select className="input" value={p.invoice_mode} onChange={e=>sf('invoice_mode',e.target.value)}>
+                        {PAY_MODES.map(m=><option key={m}>{m}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="label">Status</label>
+                      <div className="flex gap-2">
+                        {(['pending','paid'] as const).map(s=>(
+                          <button key={s} type="button"
+                            onClick={()=>sf('invoice_status',s)}
+                            className={clsx('flex-1 py-2 rounded-lg border text-sm font-medium capitalize transition-all',
+                              p.invoice_status===s
+                                ? s==='paid'?'border-emerald-500 bg-emerald-500 text-white':'border-amber-400 bg-amber-400 text-white'
+                                : 'border-gray-200 text-gray-500 hover:border-gray-300'
+                            )}>{s}</button>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <label className="label">Due Date</label>
+                      <input className="input" type="date" value={p.invoice_due} onChange={e=>sf('invoice_due',e.target.value)}/>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="label">UPI Payment Info</label>
+                    <div className="bg-emerald-50 border border-emerald-100 rounded-lg px-4 py-3 text-sm">
+                      <div className="font-bold text-emerald-800 font-mono">truetoneacademy@sbi</div>
+                      <div className="text-emerald-600 text-xs mt-0.5">State Bank of India</div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="label">Invoice Notes (optional)</label>
+                    <input className="input" value={p.invoice_notes} onChange={e=>sf('invoice_notes',e.target.value)} placeholder="e.g. 3-month advance payment"/>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Footer buttons */}
+        {!invoiceSent && (
+          <div className="flex items-center justify-between px-6 py-4 border-t border-gray-100 flex-shrink-0 bg-gray-50/60 rounded-b-2xl">
+            <div>
+              {stepIdx > 0 && <button onClick={()=>setStep(ENROLLMENT_STEPS[stepIdx-1])} className="btn">← Back</button>}
+            </div>
+            <div className="flex gap-2">
+              {step === 'Personal' && (
+                <button onClick={savePersonal} disabled={busy||!p.full_name.trim()} className="btn-primary">
+                  {busy?<Loader2 className="w-4 h-4 animate-spin"/>:null} Save & Continue →
+                </button>
+              )}
+              {step === 'Guardian & Medical' && (
+                <button onClick={saveGuardianMedical} disabled={busy} className="btn-primary">
+                  {busy?<Loader2 className="w-4 h-4 animate-spin"/>:null} Save & Continue →
+                </button>
+              )}
+              {step === 'Instrument & Package' && (
+                <button onClick={saveInstrument} disabled={busy} className="btn-primary">
+                  {busy?<Loader2 className="w-4 h-4 animate-spin"/>:null} Continue to Invoice →
+                </button>
+              )}
+              {step === 'Invoice' && (
+                <>
+                  <button onClick={()=>saveAndSendInvoice(false)} disabled={busy} className="btn">
+                    {busy?<Loader2 className="w-4 h-4 animate-spin"/>:null}
+                    {rawAmount>0?'Save Invoice':'Complete (no invoice)'}
+                  </button>
+                  {savedStudent?.email && rawAmount>0 && (
+                    <button onClick={()=>saveAndSendInvoice(true)} disabled={busy} className="btn-primary">
+                      {busy?<Loader2 className="w-4 h-4 animate-spin"/>:<Mail className="w-4 h-4"/>}
+                      Save & Email Invoice
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
