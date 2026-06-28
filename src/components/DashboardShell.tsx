@@ -352,32 +352,168 @@ function DashboardShellInner({profile}:{profile:Profile}){
 
 // ══════════════════════════════════════════════════════════════ HOME
 function HomeTab({profile,perms,students,profiles,payments,schedules,subjects,leads,setTab}:any){
-  const teachers=profiles.filter((p:any)=>p.role==='teacher')
+  const teachers=profiles.filter((p:any)=>p.role==='teacher'||p.role==='center_manager')
+  const activeStudents=students.filter((s:any)=>s.status==='Active'||!s.status)
+  const inactiveStudents=students.filter((s:any)=>s.status==='Inactive')
+  const trialStudents=students.filter((s:any)=>s.status==='Trial')
   const paid=payments.filter((p:any)=>p.status==='paid').reduce((a:number,p:any)=>a+p.amount,0)
   const pending=payments.filter((p:any)=>p.status==='pending'||p.status==='overdue').reduce((a:number,p:any)=>a+p.amount,0)
   const overdue=payments.filter((p:any)=>p.status==='overdue')
   const newLeads=leads.filter((l:any)=>l.status==='New').length
   const isTeacher=profile.role==='teacher'
+
+  // Drilldown state — show a mini student list overlay on the dashboard
+  const [drilldown,setDrilldown]=useState<{title:string;list:any[]}|null>(null)
+
+  function StudentDrilldown({title,list}:{title:string;list:any[]}){
+    return(
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm" onClick={()=>setDrilldown(null)}>
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[80vh] flex flex-col animate-fu" onClick={e=>e.stopPropagation()}>
+          <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+            <div>
+              <h2 className="font-semibold text-gray-900">{title}</h2>
+              <p className="text-xs text-gray-400 mt-0.5">{list.length} students</p>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={()=>{setDrilldown(null);setTab('students')}} className="btn btn-sm">View All →</button>
+              <button onClick={()=>setDrilldown(null)} className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100"><X className="w-4 h-4"/></button>
+            </div>
+          </div>
+          <div className="overflow-y-auto flex-1">
+            {list.length===0
+              ? <div className="py-10 text-center text-gray-300">No students</div>
+              : list.map((s:any,i:number)=>{
+                  const subs=subjects.filter((sub:any)=>(s.student_subjects||[]).some((ss:any)=>ss.subject_id===sub.id))
+                  return(
+                    <div key={s.id} className="flex items-center justify-between px-5 py-3 border-b border-gray-50 last:border-0 hover:bg-gray-50/50">
+                      <div className="flex items-center gap-3">
+                        <div className={clsx('w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold flex-shrink-0',ac(i))}>{ini(s.full_name)}</div>
+                        <div>
+                          <div className="text-sm font-medium text-gray-900">{s.full_name}</div>
+                          <div className="text-xs text-gray-400">{s.phone||s.email||'—'}</div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap gap-1">{subs.slice(0,2).map((sub:any)=><span key={sub.id} className={clsx('badge text-xs',colorBadge[sub.color]||colorBadge.violet)}>{sub.code}</span>)}</div>
+                        <span className={clsx('badge text-xs',s.status==='Active'||!s.status?'bg-emerald-50 text-emerald-700':s.status==='Trial'?'bg-amber-50 text-amber-700':'bg-gray-100 text-gray-500')}>{s.status||'Active'}</span>
+                      </div>
+                    </div>
+                  )
+                })
+            }
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return(
     <div className="animate-fu">
-      <div className="mb-6"><h1 className="text-xl font-semibold text-gray-900">Good day, {profile.full_name.split(' ')[0]} 👋</h1><p className="text-sm text-gray-400 mt-0.5">{new Date().toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}</p></div>
+      {drilldown&&<StudentDrilldown title={drilldown.title} list={drilldown.list}/>}
+      <div className="mb-6">
+        <h1 className="text-xl font-semibold text-gray-900">Good day, {profile.full_name.split(' ')[0]} 👋</h1>
+        <p className="text-sm text-gray-400 mt-0.5">{new Date().toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}</p>
+      </div>
       <div className={clsx('inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border mb-6',profile.role==='superadmin'?'bg-purple-50 text-purple-700 border-purple-200':profile.role==='center_manager'?'bg-blue-50 text-blue-700 border-blue-200':'bg-emerald-50 text-emerald-700 border-emerald-200')}>
         <span className="w-1.5 h-1.5 rounded-full bg-current"/>{ROLE_LABEL[profile.role as Role]}{isTeacher&&' — schedule view only'}
       </div>
+
       {!isTeacher&&(<>
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
-          {[{label:'Students',val:students.length,icon:Users,color:'bg-blue-50 text-blue-600',page:'students'},{label:'Leads',val:leads.length,icon:UserPlus,color:'bg-purple-50 text-purple-600',page:'leads'},{label:'Teachers',val:teachers.length,icon:GraduationCap,color:'bg-indigo-50 text-indigo-600',page:'teachers'},{label:'Subjects',val:subjects.length,icon:BookOpen,color:'bg-emerald-50 text-emerald-600',page:'subjects'},{label:'Classes/wk',val:schedules.length,icon:CalendarDays,color:'bg-amber-50 text-amber-600',page:'schedule'}].map(m=>{
-            const Icon=m.icon;return(<button key={m.label} onClick={()=>setTab(m.page)} className="card p-4 text-left hover:shadow-md transition-shadow"><div className={clsx('w-9 h-9 rounded-xl flex items-center justify-center mb-2',m.color)}><Icon className="w-4 h-4"/></div><div className="text-xl font-semibold text-gray-900">{m.val}</div><div className="text-xs text-gray-400 mt-0.5">{m.label}</div></button>)
+        {/* ── Student status breakdown ── */}
+        <div className="grid grid-cols-3 gap-3 mb-4">
+          <button onClick={()=>setDrilldown({title:'Active Students',list:activeStudents})}
+            className="card p-4 text-left hover:shadow-md transition-all hover:border-emerald-200 group">
+            <div className="flex items-center justify-between mb-2">
+              <div className="w-8 h-8 rounded-lg bg-emerald-50 flex items-center justify-center"><Users className="w-4 h-4 text-emerald-600"/></div>
+              <ChevronRight className="w-4 h-4 text-gray-300 group-hover:text-emerald-500 transition-colors"/>
+            </div>
+            <div className="text-2xl font-bold text-gray-900">{activeStudents.length}</div>
+            <div className="text-xs text-gray-400 mt-0.5">Active Students</div>
+          </button>
+
+          <button onClick={()=>setDrilldown({title:'Inactive Students',list:inactiveStudents})}
+            className="card p-4 text-left hover:shadow-md transition-all hover:border-gray-300 group">
+            <div className="flex items-center justify-between mb-2">
+              <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center"><Users className="w-4 h-4 text-gray-400"/></div>
+              <ChevronRight className="w-4 h-4 text-gray-300 group-hover:text-gray-500 transition-colors"/>
+            </div>
+            <div className="text-2xl font-bold text-gray-900">{inactiveStudents.length}</div>
+            <div className="text-xs text-gray-400 mt-0.5">Inactive Students</div>
+          </button>
+
+          <button onClick={()=>setDrilldown({title:'Trial Students',list:trialStudents})}
+            className="card p-4 text-left hover:shadow-md transition-all hover:border-amber-200 group">
+            <div className="flex items-center justify-between mb-2">
+              <div className="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center"><Users className="w-4 h-4 text-amber-500"/></div>
+              <ChevronRight className="w-4 h-4 text-gray-300 group-hover:text-amber-500 transition-colors"/>
+            </div>
+            <div className="text-2xl font-bold text-gray-900">{trialStudents.length}</div>
+            <div className="text-xs text-gray-400 mt-0.5">Trial Students</div>
+          </button>
+        </div>
+
+        {/* ── Other quick stats ── */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+          {[
+            {label:'Leads',val:leads.length,icon:UserPlus,color:'bg-purple-50 text-purple-600',page:'leads'},
+            {label:'Teachers',val:teachers.length,icon:GraduationCap,color:'bg-indigo-50 text-indigo-600',page:'teachers'},
+            {label:'Subjects',val:subjects.length,icon:BookOpen,color:'bg-teal-50 text-teal-600',page:'subjects'},
+            {label:'Classes/wk',val:schedules.length,icon:CalendarDays,color:'bg-amber-50 text-amber-600',page:'schedule'},
+          ].map(m=>{
+            const Icon=m.icon
+            return(
+              <button key={m.label} onClick={()=>setTab(m.page)} className="card p-4 text-left hover:shadow-md transition-shadow group">
+                <div className="flex items-center justify-between mb-2">
+                  <div className={clsx('w-8 h-8 rounded-lg flex items-center justify-center',m.color)}><Icon className="w-4 h-4"/></div>
+                  <ChevronRight className="w-4 h-4 text-gray-300 group-hover:text-gray-500 transition-colors"/>
+                </div>
+                <div className="text-xl font-bold text-gray-900">{m.val}</div>
+                <div className="text-xs text-gray-400 mt-0.5">{m.label}</div>
+              </button>
+            )
           })}
         </div>
-        <div className="grid grid-cols-3 gap-4 mb-5">
-          <div className="card p-4 bg-emerald-50 border-emerald-100"><div className="text-xs text-emerald-600 font-medium mb-1">Collected</div><div className="text-xl font-semibold text-emerald-700">{fmt(paid)}</div></div>
-          <div className="card p-4 bg-amber-50 border-amber-100"><div className="text-xs text-amber-600 font-medium mb-1">Pending</div><div className="text-xl font-semibold text-amber-700">{fmt(pending)}</div></div>
-          <div className="card p-4 bg-red-50 border-red-100"><div className="text-xs text-red-500 font-medium mb-1">Overdue</div><div className="text-xl font-semibold text-red-600">{overdue.length} students</div></div>
+
+        {/* ── Payment summary ── */}
+        <div className="grid grid-cols-3 gap-3 mb-4">
+          <button onClick={()=>setTab('payments')} className="card p-4 bg-emerald-50 border-emerald-100 text-left hover:shadow-md transition-shadow">
+            <div className="text-xs text-emerald-600 font-medium mb-1">Collected</div>
+            <div className="text-xl font-semibold text-emerald-700">{fmt(paid)}</div>
+          </button>
+          <button onClick={()=>setTab('payments')} className="card p-4 bg-amber-50 border-amber-100 text-left hover:shadow-md transition-shadow">
+            <div className="text-xs text-amber-600 font-medium mb-1">Pending</div>
+            <div className="text-xl font-semibold text-amber-700">{fmt(pending)}</div>
+          </button>
+          <button onClick={()=>setTab('payments')} className="card p-4 bg-red-50 border-red-100 text-left hover:shadow-md transition-shadow">
+            <div className="text-xs text-red-500 font-medium mb-1">Overdue</div>
+            <div className="text-xl font-semibold text-red-600">{overdue.length} invoice{overdue.length!==1?'s':''}</div>
+          </button>
         </div>
+
+        {/* ── By instrument ── */}
+        <div className="card p-4 mb-4">
+          <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Students by Instrument</div>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
+            {subjects.map((sub:any)=>{
+              const count=students.filter((s:any)=>(s.student_subjects||[]).some((ss:any)=>ss.subject_id===sub.id)).length
+              if(!count) return null
+              return(
+                <button key={sub.id}
+                  onClick={()=>setDrilldown({title:`${sub.name} Students`,list:students.filter((s:any)=>(s.student_subjects||[]).some((ss:any)=>ss.subject_id===sub.id))})}
+                  className="flex flex-col items-center p-3 rounded-xl border border-gray-100 hover:border-brand-200 hover:bg-brand-50/30 transition-all group">
+                  <span className={clsx('badge text-xs mb-1',colorBadge[sub.color]||colorBadge.violet)}>{sub.code}</span>
+                  <div className="text-xl font-bold text-gray-900">{count}</div>
+                  <div className="text-xs text-gray-400 truncate w-full text-center">{sub.name}</div>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
         {newLeads>0&&<div className="card p-4 mb-4 border-purple-100 bg-purple-50/50 flex items-center justify-between"><div className="flex items-center gap-2 text-purple-700"><UserPlus className="w-4 h-4"/><span className="text-sm font-medium">{newLeads} new lead{newLeads>1?'s':''} awaiting follow-up</span></div><button onClick={()=>setTab('leads')} className="btn btn-sm text-purple-700 border-purple-200">View Leads</button></div>}
-        {overdue.length>0&&<div className="card mb-4"><div className="px-5 py-3 border-b border-gray-100 flex items-center gap-2 text-sm font-medium text-red-600"><AlertCircle className="w-4 h-4"/>Overdue Fees</div>{overdue.slice(0,5).map((p:any)=><div key={p.id} className="flex items-center justify-between px-5 py-3 border-b border-gray-50 last:border-0"><div><div className="text-sm font-medium text-gray-800">{p.students?.full_name||p.student_name}</div><div className="text-xs text-gray-400">{p.subjects?.name} · {p.month_label}</div></div><span className="text-sm font-semibold text-red-600">{fmt(p.amount)}</span></div>)}</div>}
+        {overdue.length>0&&<div className="card mb-4"><div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between"><div className="flex items-center gap-2 text-sm font-medium text-red-600"><AlertCircle className="w-4 h-4"/>Overdue Fees</div><button onClick={()=>setTab('payments')} className="text-xs text-red-400 hover:text-red-600">View all →</button></div>{overdue.slice(0,5).map((p:any)=><div key={p.id} className="flex items-center justify-between px-5 py-3 border-b border-gray-50 last:border-0"><div><div className="text-sm font-medium text-gray-800">{p.students?.full_name||p.student_name}</div><div className="text-xs text-gray-400">{p.subjects?.name} · {p.month_label}</div></div><span className="text-sm font-semibold text-red-600">{fmt(p.amount)}</span></div>)}</div>}
       </>)}
+
       {isTeacher&&<div className="card p-10 text-center"><CalendarDays className="w-12 h-12 text-brand-300 mx-auto mb-3"/><h2 className="text-base font-medium text-gray-800 mb-1">Your Teaching Schedule</h2><p className="text-sm text-gray-400 mb-5">View classes assigned to your subjects.</p><button onClick={()=>setTab('schedule')} className="btn-primary">View My Schedule</button></div>}
     </div>
   )
