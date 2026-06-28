@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, useCallback, useRef, Component, ReactNode } from 'react'
+import React, { useState, useEffect, useCallback, useRef, Component, ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import { sb } from '@/lib/client'
 import {
@@ -2797,8 +2797,93 @@ function InvoicePreview({ student, subject, pkg, form, invoiceNo, rawAmount, dis
 // ══════════════════════════════════════════════════════════════
 // REPORTS TAB
 // ══════════════════════════════════════════════════════════════
+// ── Donut/Pie chart using SVG ────────────────────────────────
+function DonutChart({ data, total }: { data: { label: string; value: number; color: string }[], total: number }) {
+  const COLORS: Record<string,string> = {
+    'emerald-500': '#10b981', 'blue-500': '#3b82f6', 'violet-500': '#8b5cf6',
+    'amber-400': '#f59e0b', 'orange-400': '#f97316', 'red-500': '#ef4444',
+    'slate-400': '#94a3b8', 'gray-300': '#d1d5db', 'gray-400': '#9ca3af',
+    'brand-500': '#3B1F8C', 'purple-700': '#7e22ce', 'teal-400': '#2dd4bf',
+  }
+  const SIZE = 180, CX = 90, CY = 90, R = 70, INNER = 45
+  const validData = data.filter(d => d.value > 0)
+  if (!validData.length) return <div className="text-center py-8 text-gray-300">No data</div>
+
+  let cumAngle = -90 // start from top
+  const slices = validData.map(d => {
+    const pct = d.value / total
+    const angle = pct * 360
+    const startAngle = cumAngle
+    cumAngle += angle
+    const endAngle = cumAngle
+
+    const toRad = (deg: number) => (deg * Math.PI) / 180
+    const x1 = CX + R * Math.cos(toRad(startAngle))
+    const y1 = CY + R * Math.sin(toRad(startAngle))
+    const x2 = CX + R * Math.cos(toRad(endAngle))
+    const y2 = CY + R * Math.sin(toRad(endAngle))
+    const xi1 = CX + INNER * Math.cos(toRad(startAngle))
+    const yi1 = CY + INNER * Math.sin(toRad(startAngle))
+    const xi2 = CX + INNER * Math.cos(toRad(endAngle))
+    const yi2 = CY + INNER * Math.sin(toRad(endAngle))
+    const large = angle > 180 ? 1 : 0
+
+    return {
+      ...d,
+      path: `M ${x1} ${y1} A ${R} ${R} 0 ${large} 1 ${x2} ${y2} L ${xi2} ${yi2} A ${INNER} ${INNER} 0 ${large} 0 ${xi1} ${yi1} Z`,
+      fill: COLORS[d.color] || '#6b7280',
+      pct: Math.round(pct * 100),
+    }
+  })
+
+  const [hovered, setHovered] = React.useState<string | null>(null)
+
+  return (
+    <div className="flex items-center gap-8">
+      <div className="relative flex-shrink-0">
+        <svg width={SIZE} height={SIZE} className="overflow-visible">
+          {slices.map((slice, i) => (
+            <path key={i}
+              d={slice.path}
+              fill={slice.fill}
+              opacity={hovered && hovered !== slice.label ? 0.4 : 1}
+              stroke="white" strokeWidth={2}
+              className="transition-all duration-200 cursor-pointer"
+              onMouseEnter={() => setHovered(slice.label)}
+              onMouseLeave={() => setHovered(null)}
+            />
+          ))}
+          {/* Center text */}
+          <text x={CX} y={CY - 6} textAnchor="middle" className="text-2xl font-black" style={{ fontSize: '24px', fontWeight: 800, fill: '#111827' }}>{total}</text>
+          <text x={CX} y={CY + 14} textAnchor="middle" style={{ fontSize: '11px', fill: '#9ca3af' }}>students</text>
+        </svg>
+      </div>
+
+      {/* Legend */}
+      <div className="flex-1 space-y-2.5">
+        {slices.map(slice => (
+          <div key={slice.label}
+            className={clsx('flex items-center justify-between py-1.5 px-2 rounded-lg transition-all cursor-default', hovered === slice.label ? 'bg-gray-50' : '')}
+            onMouseEnter={() => setHovered(slice.label)}
+            onMouseLeave={() => setHovered(null)}
+          >
+            <div className="flex items-center gap-2.5">
+              <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: COLORS[slice.color] || '#6b7280' }}/>
+              <span className="text-sm text-gray-700">{slice.label}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-gray-400">{slice.pct}%</span>
+              <span className="text-sm font-bold text-gray-900 w-6 text-right">{slice.value}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function ReportsTab({ students, subjects, payments, profiles, attendance }: any) {
-  const [activeReport, setActiveReport] = useState<string>('students_instrument')
+  const [activeReport, setActiveReport] = useState<string>('students_status')
 
   // ── helpers ──────────────────────────────────────────────────
   const paidPayments = payments.filter((p: any) => p.status === 'paid')
@@ -2814,9 +2899,23 @@ function ReportsTab({ students, subjects, payments, profiles, attendance }: any)
     if (count > 0) studentsBySubject[s.name] = count
   })
 
-  // Students by status
-  const activeStudents = students.filter((s: any) => s.status === 'Active').length
+  // Students by status — all 7 classifications
+  const statusCounts = STUDENT_STATUSES.map(st => ({
+    ...st,
+    count: students.filter((s: any) => (s.status || 'Active') === st.value).length
+  })).filter(st => st.count > 0)
+
+  const activeStudents = students.filter((s: any) => s.status === 'Active' || !s.status).length
   const inactiveStudents = students.length - activeStudents
+
+  // Students by grade level (from student_subjects)
+  const byGrade: Record<string,number> = {}
+  students.forEach((s: any) => {
+    (s.student_subjects || []).forEach((ss: any) => {
+      const g = ss.grade_level || 'Unassigned'
+      byGrade[g] = (byGrade[g] || 0) + 1
+    })
+  })
 
   // Payments by month (last 12)
   const monthlyCollection: Record<string, number> = {}
@@ -2861,13 +2960,15 @@ function ReportsTab({ students, subjects, payments, profiles, attendance }: any)
   const attBillable = attendance.filter((a: any) => a.status === 'absent_billable' && a.type === 'student').length
 
   const reports = [
-    { id: 'students_instrument', label: 'Students by Instrument' },
-    { id: 'students_payment',    label: 'Students by Payment' },
-    { id: 'payment_monthly',     label: 'Monthly Collection' },
-    { id: 'payment_ytd',         label: 'Year to Date' },
-    { id: 'payment_mode',        label: 'Payment by Mode' },
-    { id: 'payment_subject',     label: 'Revenue by Subject' },
-    { id: 'attendance_report',   label: 'Attendance Summary' },
+    { id: 'students_status',     label: 'Students by Status',     group: 'Student Reports' },
+    { id: 'students_instrument', label: 'Students by Instrument', group: 'Student Reports' },
+    { id: 'students_grade',      label: 'Students by Grade',      group: 'Student Reports' },
+    { id: 'students_payment',    label: 'Students by Payment',    group: 'Student Reports' },
+    { id: 'payment_monthly',     label: 'Monthly Collection',     group: 'Payment Reports' },
+    { id: 'payment_ytd',         label: 'Year to Date',           group: 'Payment Reports' },
+    { id: 'payment_mode',        label: 'Payment by Mode',        group: 'Payment Reports' },
+    { id: 'payment_subject',     label: 'Revenue by Subject',     group: 'Payment Reports' },
+    { id: 'attendance_report',   label: 'Attendance Summary',     group: 'Other' },
   ]
 
   const BAR_COLORS = ['#3B1F8C','#7B5FC4','#A98CE8','#4A2FA0','#6B55C8','#8F7ED5','#C8B5F5','#D8D1F0']
@@ -2970,38 +3071,127 @@ function ReportsTab({ students, subjects, payments, profiles, attendance }: any)
         {/* Left nav */}
         <div className="col-span-1">
           <div className="card p-2">
-            <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider px-2 py-1.5">Student Reports</div>
-            {reports.slice(0,2).map(r => (
-              <button key={r.id} onClick={() => setActiveReport(r.id)}
-                className={clsx('w-full text-left px-3 py-2.5 rounded-lg text-sm transition-all mb-0.5',
-                  activeReport===r.id ? 'bg-brand-500 text-white font-medium' : 'text-gray-600 hover:bg-gray-50'
-                )}>
-                {r.label}
-              </button>
-            ))}
-            <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider px-2 py-1.5 mt-2">Payment Reports</div>
-            {reports.slice(2,6).map(r => (
-              <button key={r.id} onClick={() => setActiveReport(r.id)}
-                className={clsx('w-full text-left px-3 py-2.5 rounded-lg text-sm transition-all mb-0.5',
-                  activeReport===r.id ? 'bg-brand-500 text-white font-medium' : 'text-gray-600 hover:bg-gray-50'
-                )}>
-                {r.label}
-              </button>
-            ))}
-            <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider px-2 py-1.5 mt-2">Other</div>
-            {reports.slice(6).map(r => (
-              <button key={r.id} onClick={() => setActiveReport(r.id)}
-                className={clsx('w-full text-left px-3 py-2.5 rounded-lg text-sm transition-all mb-0.5',
-                  activeReport===r.id ? 'bg-brand-500 text-white font-medium' : 'text-gray-600 hover:bg-gray-50'
-                )}>
-                {r.label}
-              </button>
+            {(['Student Reports','Payment Reports','Other'] as const).map(group => (
+              <div key={group}>
+                <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider px-2 py-1.5 mt-1">{group}</div>
+                {reports.filter(r => r.group === group).map(r => (
+                  <button key={r.id} onClick={() => setActiveReport(r.id)}
+                    className={clsx('w-full text-left px-3 py-2 rounded-lg text-sm transition-all mb-0.5',
+                      activeReport===r.id ? 'bg-brand-500 text-white font-medium' : 'text-gray-600 hover:bg-gray-50'
+                    )}>
+                    {r.label}
+                  </button>
+                ))}
+              </div>
             ))}
           </div>
         </div>
 
         {/* Right content */}
         <div className="col-span-3 card p-5">
+          {activeReport === 'students_status' && (
+            <div>
+              <div className="flex items-center justify-between mb-5">
+                <h2 className="font-semibold text-gray-900">Students by Status</h2>
+                <button onClick={() => exportCSV(statusCounts.map(s => ({ Status: s.label, Count: s.count, Percentage: `${Math.round(s.count/students.length*100)}%` })), 'students_by_status.csv')} className="btn btn-sm"><Download className="w-3 h-3"/> Export</button>
+              </div>
+
+              {/* Donut chart using SVG */}
+              <DonutChart data={statusCounts.map(s => ({ label: s.label, value: s.count, color: s.dot.replace('bg-','') }))} total={students.length}/>
+
+              {/* Status breakdown bars */}
+              <div className="mt-6 space-y-3">
+                {statusCounts.map((st, i) => {
+                  const pct = Math.round((st.count / students.length) * 100)
+                  return (
+                    <div key={st.value}>
+                      <div className="flex items-center justify-between text-sm mb-1.5">
+                        <div className="flex items-center gap-2">
+                          <div className={clsx('w-3 h-3 rounded-full', st.dot)}/>
+                          <span className="font-medium text-gray-800">{st.label}</span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <span className="text-gray-400 text-xs">{pct}%</span>
+                          <span className="font-semibold text-gray-900 w-6 text-right">{st.count}</span>
+                        </div>
+                      </div>
+                      <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
+                        <div className={clsx('h-full rounded-full transition-all duration-700', st.dot)}
+                          style={{ width: `${pct}%` }}/>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+
+              {/* Summary grid */}
+              <div className="grid grid-cols-4 gap-3 mt-6">
+                {statusCounts.map(st => (
+                  <div key={st.value} className={clsx('rounded-xl p-3 border text-center', st.color)}>
+                    <div className="text-2xl font-bold">{st.count}</div>
+                    <div className="text-xs mt-0.5 opacity-75">{st.label}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {activeReport === 'students_grade' && (
+            <div>
+              <div className="flex items-center justify-between mb-5">
+                <h2 className="font-semibold text-gray-900">Students by Grade Level</h2>
+                <button onClick={() => exportCSV(Object.entries(byGrade).map(([Grade,Count]) => ({Grade,Count})), 'students_by_grade.csv')} className="btn btn-sm"><Download className="w-3 h-3"/> Export</button>
+              </div>
+
+              {Object.keys(byGrade).length === 0
+                ? <div className="text-center py-10 text-gray-300">No grade level data — assign grade levels when enrolling students to subjects</div>
+                : (
+                  <>
+                    <DonutChart
+                      data={[
+                        { label: 'Beginner–Grade 2', value: byGrade['Beginner–Grade 2'] || 0, color: 'emerald-500' },
+                        { label: 'Grade 3–5',        value: byGrade['Grade 3–5'] || 0,        color: 'blue-500' },
+                        { label: 'Grade 6–8',        value: byGrade['Grade 6–8'] || 0,        color: 'violet-500' },
+                        { label: 'Unassigned',       value: byGrade['Unassigned'] || 0,       color: 'gray-300' },
+                      ].filter(d => d.value > 0)}
+                      total={Object.values(byGrade).reduce((a,b)=>a+b,0)}
+                    />
+                    <div className="mt-6 space-y-3">
+                      {[
+                        { label: 'Beginner–Grade 2', color: 'bg-emerald-500', border: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+                        { label: 'Grade 3–5',        color: 'bg-blue-500',    border: 'bg-blue-50 text-blue-700 border-blue-200' },
+                        { label: 'Grade 6–8',        color: 'bg-violet-500',  border: 'bg-violet-50 text-violet-700 border-violet-200' },
+                        { label: 'Unassigned',       color: 'bg-gray-300',    border: 'bg-gray-50 text-gray-500 border-gray-200' },
+                      ].map(g => {
+                        const count = byGrade[g.label] || 0
+                        const total = Object.values(byGrade).reduce((a:number,b:any)=>a+b,0)
+                        const pct = total > 0 ? Math.round((count / total) * 100) : 0
+                        if (!count) return null
+                        return (
+                          <div key={g.label}>
+                            <div className="flex items-center justify-between text-sm mb-1.5">
+                              <div className="flex items-center gap-2">
+                                <div className={clsx('w-3 h-3 rounded-full', g.color)}/>
+                                <span className="font-medium text-gray-800">{g.label}</span>
+                              </div>
+                              <div className="flex items-center gap-3">
+                                <span className="text-gray-400 text-xs">{pct}%</span>
+                                <span className="font-semibold text-gray-900">{count}</span>
+                              </div>
+                            </div>
+                            <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
+                              <div className={clsx('h-full rounded-full', g.color)} style={{ width: `${pct}%` }}/>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </>
+                )
+              }
+            </div>
+          )}
+
           {activeReport === 'students_instrument' && (
             <div>
               <div className="flex items-center justify-between mb-4">
