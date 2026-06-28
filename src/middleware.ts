@@ -29,22 +29,17 @@ export async function middleware(req: NextRequest) {
       },
     }
   )
-
   const { data: { user } } = await supabase.auth.getUser()
   const path = req.nextUrl.pathname
-
   if (!user && path.startsWith('/dashboard')) return NextResponse.redirect(new URL('/login', req.url))
   if (user && path === '/login') return NextResponse.redirect(new URL('/dashboard', req.url))
-
   if (user && path.startsWith('/dashboard')) {
     const { data: p } = await supabase.from('profiles').select('role').eq('id', user.id).single()
     const role = p?.role as Role | undefined
-    const matched = Object.keys(GUARD).filter(k => path.startsWith(k)).sort((a, b) => b.length - a.length)[0]
-    if (matched && role && !GUARD[matched].includes(role)) {
+    const matched = Object.keys(GUARD).filter(k => path.startsWith(k)).sort((a,b) => b.length-a.length)[0]
+    if (matched && role && !GUARD[matched].includes(role))
       return NextResponse.redirect(new URL('/dashboard?denied=1', req.url))
-    }
   }
-
   return res
 }
 

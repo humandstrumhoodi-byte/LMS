@@ -33,17 +33,73 @@ const colorCell: Record<string,string> = {
   indigo:'bg-indigo-100 text-indigo-700 border border-indigo-200'
 }
 
-// ─── parse CSV/Excel text rows ────────────────────────────────
+// ─── CSV parser — handles quoted fields with commas inside ────
 function parseCSV(text: string): Record<string,string>[] {
   const lines = text.trim().split('\n').filter(l => l.trim())
   if (lines.length < 2) return []
-  const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/[^a-z0-9_]/g,'_'))
+
+  // Proper quoted-CSV field splitter
+  function splitLine(line: string): string[] {
+    const fields: string[] = []
+    let cur = '', inQ = false
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i]
+      if (ch === '"') {
+        if (inQ && line[i+1] === '"') { cur += '"'; i++ }
+        else inQ = !inQ
+      } else if (ch === ',' && !inQ) {
+        fields.push(cur.trim()); cur = ''
+      } else {
+        cur += ch
+      }
+    }
+    fields.push(cur.trim())
+    return fields
+  }
+
+  const rawHeaders = splitLine(lines[0])
+  const headers = rawHeaders.map(h => h.trim().replace(/^"|"$/g,'').toLowerCase())
+
   return lines.slice(1).map(line => {
-    const vals = line.split(',').map(v => v.trim().replace(/^"|"$/g,''))
+    const vals = splitLine(line)
     const row: Record<string,string> = {}
-    headers.forEach((h,i) => { row[h] = vals[i] || '' })
+    headers.forEach((h, i) => { row[h] = (vals[i] || '').replace(/^"|"$/g, '').trim() })
     return row
   }).filter(r => Object.values(r).some(v => v))
+}
+
+// ─── Map Hum & Strum CSV columns → DB fields ─────────────────
+function mapHumStrumStudent(row: Record<string,string>) {
+  // Handles the exact export format: First Name, Last Name, Name, Status, Email, Phone,
+  // Guardian Name, Guardian Phone, Guardian Email, Created On, Batch, Student ID Prefix,
+  // Student ID, Courses, School Year, School Name, Refferal Source, Nationality, Area,
+  // City, Date Of Birth, Age, Signup Source, Gender, Health Info, What is your Discipline?,
+  // Please select you Discipline?
+  const fullName = row['name'] || `${row['first_name']||''} ${row['last_name']||''}`.trim()
+  const discipline = row['what_is_your_discipline?'] || row['please_select_you_discipline?'] ||
+                     row['courses'] || row['discipline'] || ''
+  const dob = row['date_of_birth'] ? row['date_of_birth'].slice(0, 10) : null
+  return {
+    full_name:       fullName,
+    email:           row['email'] || null,
+    phone:           row['phone'] || null,
+    status:          row['status'] || 'Active',
+    student_id_ext:  row['student_id'] || null,
+    guardian_name:   row['guardian_name'] || null,
+    guardian_phone:  row['guardian_phone'] || null,
+    guardian_email:  row['guardian_email'] || null,
+    date_of_birth:   dob || null,
+    age:             row['age'] ? parseInt(row['age']) || null : null,
+    gender:          row['gender'] || null,
+    nationality:     row['nationality'] || null,
+    city:            row['city'] || null,
+    area:            row['area'] || null,
+    referral_source: row['refferal_source'] || row['referral_source'] || row['signup_source'] || null,
+    discipline:      discipline || null,
+    signup_source:   row['signup_source'] || null,
+    batch:           row['batch'] || null,
+    joined_date:     row['created_on'] ? row['created_on'].slice(0, 10) : new Date().toISOString().slice(0, 10),
+  }
 }
 
 // ─── Modal ────────────────────────────────────────────────────
@@ -71,131 +127,143 @@ function Avatar({ name, i }: { name:string; i:number }) {
   return <div className={clsx('w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold flex-shrink-0', ac(i))}>{ini(name)}</div>
 }
 
-// ─── Excel Import Panel ───────────────────────────────────────
+// ─── Excel / CSV Import Panel ─────────────────────────────────
 function ExcelImport({ type, subjects, onImport }: { type:'students'|'leads'; subjects:any[]; onImport:(rows:any[])=>void }) {
   const fileRef = useRef<HTMLInputElement>(null)
-  const [preview, setPreview] = useState<any[]>([])
+  const [rows, setRows] = useState<any[]>([])
   const [error, setError] = useState('')
-  const [mapping, setMapping] = useState<Record<string,string>>({})
+  const [detected, setDetected] = useState<'humstrum'|'generic'|null>(null)
 
-  const REQUIRED_FIELDS = type === 'students'
-    ? ['full_name']
-    : ['full_name']
-  const ALL_FIELDS = type === 'students'
-    ? ['full_name','email','phone','joined_date']
-    : ['full_name','email','phone','source','notes']
+  // Detect if it's the Hum & Strum export format
+  function isHumStrumFormat(headers: string[]): boolean {
+    const h = headers.join(',').toLowerCase()
+    return h.includes('first name') || h.includes('student id') || h.includes('guardian name') || h.includes('refferal source')
+  }
 
   function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
-    setError(''); setPreview([])
+    setError(''); setRows([])
     const file = e.target.files?.[0]
     if (!file) return
     const reader = new FileReader()
     reader.onload = (ev) => {
       try {
         const text = ev.target?.result as string
-        const rows = parseCSV(text)
-        if (!rows.length) { setError('No data rows found. Make sure your file has a header row.'); return }
-        setPreview(rows.slice(0, 5))
-        // Auto-map columns
-        const autoMap: Record<string,string> = {}
-        if (rows[0]) {
-          Object.keys(rows[0]).forEach(col => {
-            const c = col.toLowerCase()
-            if (c.includes('name')) autoMap['full_name'] = col
-            else if (c.includes('email')) autoMap['email'] = col
-            else if (c.includes('phone') || c.includes('mobile')) autoMap['phone'] = col
-            else if (c.includes('date') || c.includes('join')) autoMap['joined_date'] = col
-            else if (c.includes('source')) autoMap['source'] = col
-            else if (c.includes('note')) autoMap['notes'] = col
-          })
-        }
-        setMapping(autoMap)
-      } catch(err) { setError('Could not read file. Please use CSV or Excel saved as CSV.') }
+        const parsed = parseCSV(text)
+        if (!parsed.length) { setError('No data rows found. Ensure the file has a header row.'); return }
+        const firstRowKeys = Object.keys(parsed[0])
+        const fmt = isHumStrumFormat(firstRowKeys) ? 'humstrum' : 'generic'
+        setDetected(fmt)
+        setRows(parsed)
+      } catch {
+        setError('Could not read file. Please use a CSV file.')
+      }
     }
     reader.readAsText(file)
   }
 
   function doImport() {
-    if (!preview.length) return
-    // Re-read full file
-    const file = fileRef.current?.files?.[0]
-    if (!file) return
-    const reader = new FileReader()
-    reader.onload = (ev) => {
-      const rows = parseCSV(ev.target?.result as string)
-      const mapped = rows.map(row => {
-        const out: Record<string,string> = {}
-        ALL_FIELDS.forEach(field => {
-          const col = mapping[field]
-          if (col && row[col]) out[field] = row[col]
-        })
-        return out
-      }).filter(r => r.full_name)
-      onImport(mapped)
+    if (!rows.length) return
+    let mapped: any[]
+    if (type === 'students') {
+      mapped = detected === 'humstrum'
+        ? rows.map(mapHumStrumStudent).filter(r => r.full_name)
+        : rows.map(r => ({
+            full_name: r['full_name'] || r['name'] || '',
+            email: r['email'] || null,
+            phone: r['phone'] || null,
+            joined_date: r['joined_date'] || new Date().toISOString().slice(0,10),
+          })).filter(r => r.full_name)
+    } else {
+      mapped = rows.map(r => ({
+        full_name: r['name'] || r['full_name'] || '',
+        email: r['email'] || null,
+        phone: r['phone'] || null,
+        source: r['source'] || r['signup_source'] || r['refferal_source'] || null,
+        notes: r['notes'] || null,
+        status: 'New',
+      })).filter(r => r.full_name)
     }
-    reader.readAsText(file)
+    onImport(mapped)
   }
 
-  const previewCols = preview[0] ? Object.keys(preview[0]) : []
+  // Preview columns for Hum & Strum — show the meaningful ones only
+  const previewRows = rows.slice(0, 5)
+  const previewCols = detected === 'humstrum'
+    ? ['name','status','email','phone','date_of_birth','gender','city','courses']
+    : (rows[0] ? Object.keys(rows[0]).slice(0, 6) : [])
+
+  const humStrumTemplate = `"First Name","Last Name","Name","Status","Email","Phone","Guardian Name","Guardian Phone","Guardian Email","Created On","Batch","Student ID Prefix","Student ID","Courses","School Year","School Name","Refferal Source","Nationality","Area","City","Date Of Birth","Age","Signup Source","Gender"
+"Arjun","Mehta","Arjun Mehta","Active","arjun@email.com","+91 98765 43210","","","","2024-01-15 00:00:00","","","1","Guitar","","","Instagram","IN","Hoodi","Bengaluru","2012-06-15","12","Manual entry","Male"`
+
+  const genericTemplate = type === 'students'
+    ? 'full_name,email,phone,joined_date\nArjun Mehta,arjun@email.com,9876543210,2024-01-15'
+    : 'full_name,email,phone,source,notes\nPriya Sharma,priya@email.com,9876543211,Instagram,Interested in guitar'
 
   return (
     <div className="space-y-4">
-      {/* Download template */}
-      <div className="flex items-center justify-between p-3 bg-blue-50 rounded-lg border border-blue-100">
-        <div className="text-sm text-blue-700">Download a template CSV to fill in</div>
-        <a
-          href={`data:text/csv;charset=utf-8,${encodeURIComponent(
-            type === 'students'
-              ? 'full_name,email,phone,joined_date\nArjun Mehta,arjun@email.com,9876543210,2024-01-15'
-              : 'full_name,email,phone,source,notes\nPriya Sharma,priya@email.com,9876543211,Instagram,Interested in guitar'
-          )}`}
-          download={`${type}-template.csv`}
-          className="btn btn-sm"
-        >
-          <Download className="w-3 h-3"/> Template
+      {/* Format info */}
+      <div className="rounded-xl border border-blue-100 bg-blue-50 p-4">
+        <div className="text-sm font-medium text-blue-800 mb-1">✓ Supports your Hum & Strum export format</div>
+        <div className="text-xs text-blue-600">
+          Automatically detects and maps: Name, Status, Email, Phone, Guardian details, DOB, Gender, City, Courses, Student ID and more.
+        </div>
+      </div>
+
+      {/* Template downloads */}
+      <div className="flex gap-2">
+        <a href={`data:text/csv;charset=utf-8,${encodeURIComponent(humStrumTemplate)}`}
+          download="hum-strum-template.csv" className="btn btn-sm flex-1 justify-center">
+          <Download className="w-3 h-3"/> Hum & Strum Format
+        </a>
+        <a href={`data:text/csv;charset=utf-8,${encodeURIComponent(genericTemplate)}`}
+          download="simple-template.csv" className="btn btn-sm flex-1 justify-center">
+          <Download className="w-3 h-3"/> Simple Format
         </a>
       </div>
 
-      {/* File upload */}
       <div>
-        <label className="label">Upload CSV / Excel (save Excel as CSV first)</label>
-        <input ref={fileRef} type="file" accept=".csv,.txt" onChange={handleFile} className="input" />
+        <label className="label">Upload CSV file</label>
+        <input ref={fileRef} type="file" accept=".csv,.txt" onChange={handleFile} className="input"/>
+        <div className="text-xs text-gray-400 mt-1">For Excel: File → Save As → CSV (Comma delimited)</div>
       </div>
 
       {error && <div className="px-3 py-2 rounded-lg bg-red-50 text-red-600 text-sm">{error}</div>}
 
-      {/* Column mapping */}
-      {preview.length > 0 && (
+      {rows.length > 0 && (
         <>
-          <div>
-            <label className="label mb-2">Map your columns to fields</label>
-            <div className="grid grid-cols-2 gap-2">
-              {ALL_FIELDS.map(field => (
-                <div key={field}>
-                  <div className="text-xs text-gray-500 mb-1 capitalize">{field.replace('_',' ')}{REQUIRED_FIELDS.includes(field) ? ' *' : ''}</div>
-                  <select className="input text-xs py-1" value={mapping[field]||''} onChange={e=>setMapping(m=>({...m,[field]:e.target.value}))}>
-                    <option value="">— skip —</option>
-                    {previewCols.map(c=><option key={c} value={c}>{c}</option>)}
-                  </select>
-                </div>
-              ))}
-            </div>
+          <div className={clsx('px-3 py-2 rounded-lg text-sm font-medium border',
+            detected === 'humstrum'
+              ? 'bg-emerald-50 text-emerald-700 border-emerald-100'
+              : 'bg-amber-50 text-amber-700 border-amber-100'
+          )}>
+            {detected === 'humstrum'
+              ? `✓ Hum & Strum format detected — ${rows.length} rows ready to import`
+              : `✓ Generic CSV detected — ${rows.length} rows ready to import`
+            }
           </div>
 
-          {/* Preview */}
           <div>
             <div className="label mb-1">Preview (first 5 rows)</div>
-            <div className="overflow-x-auto rounded-lg border border-gray-100">
-              <table className="w-full text-xs">
-                <thead><tr>{previewCols.map(c=><th key={c} className="th py-1.5">{c}</th>)}</tr></thead>
-                <tbody>{preview.map((row,i)=><tr key={i}>{previewCols.map(c=><td key={c} className="td py-1.5">{row[c]}</td>)}</tr>)}</tbody>
+            <div className="overflow-x-auto rounded-lg border border-gray-100 text-xs">
+              <table className="w-full">
+                <thead>
+                  <tr>{previewCols.filter(c => previewRows[0]?.[c] !== undefined).map(c =>
+                    <th key={c} className="th py-1.5 whitespace-nowrap">{c}</th>
+                  )}</tr>
+                </thead>
+                <tbody>
+                  {previewRows.map((row, i) =>
+                    <tr key={i}>{previewCols.filter(c => row[c] !== undefined).map(c =>
+                      <td key={c} className="td py-1.5 max-w-[120px] truncate">{row[c]||'—'}</td>
+                    )}</tr>
+                  )}
+                </tbody>
               </table>
             </div>
-            <div className="text-xs text-gray-400 mt-1">Showing first 5 of your rows</div>
           </div>
 
           <button onClick={doImport} className="btn-primary w-full justify-center">
-            <Upload className="w-4 h-4"/> Import {type === 'students' ? 'Students' : 'Leads'}
+            <Upload className="w-4 h-4"/> Import {rows.length} {type === 'students' ? 'Students' : 'Leads'}
           </button>
         </>
       )}
@@ -441,18 +509,41 @@ function StudentsTab({ students, subjects, perms, reload }:any) {
 
   async function handleImport(rows: any[]) {
     setBusy(true)
-    let ok=0, fail=0
+    let ok=0, fail=0, skip=0
     for (const row of rows) {
-      const {error} = await supabase.from('students').insert({
-        full_name: row.full_name,
-        email: row.email||null,
-        phone: row.phone||null,
-        joined_date: row.joined_date||new Date().toISOString().slice(0,10)
-      })
-      if (error) fail++; else ok++
+      if (!row.full_name?.trim()) { skip++; continue }
+      // Insert all available fields — extra columns are ignored if they don't exist yet
+      const payload: any = {
+        full_name:       row.full_name,
+        email:           row.email || null,
+        phone:           row.phone || null,
+        joined_date:     row.joined_date || new Date().toISOString().slice(0,10),
+      }
+      // Extended fields (only saved if column exists — run add_student_fields.sql first)
+      if (row.status)          payload.status          = row.status
+      if (row.student_id_ext)  payload.student_id_ext  = row.student_id_ext
+      if (row.guardian_name)   payload.guardian_name   = row.guardian_name
+      if (row.guardian_phone)  payload.guardian_phone  = row.guardian_phone
+      if (row.guardian_email)  payload.guardian_email  = row.guardian_email
+      if (row.date_of_birth)   payload.date_of_birth   = row.date_of_birth
+      if (row.age)             payload.age             = row.age
+      if (row.gender)          payload.gender          = row.gender
+      if (row.nationality)     payload.nationality     = row.nationality
+      if (row.city)            payload.city            = row.city
+      if (row.area)            payload.area            = row.area
+      if (row.referral_source) payload.referral_source = row.referral_source
+      if (row.discipline)      payload.discipline      = row.discipline
+      if (row.signup_source)   payload.signup_source   = row.signup_source
+      if (row.batch)           payload.batch           = row.batch
+
+      const {error} = await supabase.from('students').insert(payload)
+      if (error) {
+        console.error('Import error for', row.full_name, error.message)
+        fail++
+      } else ok++
     }
     setBusy(false)
-    setImportResult(`✓ Imported ${ok} students${fail>0?`, ${fail} failed`:''}`)
+    setImportResult(`✓ Imported ${ok} students${fail>0?` · ${fail} failed`:''}${skip>0?` · ${skip} skipped (no name)`:''}`)
     setImportOpen(false)
     reload()
   }

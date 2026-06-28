@@ -20,27 +20,33 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Center managers may only create teacher accounts' }, { status: 403 })
 
   const svc = await serviceSB()
+
+  // Create auth user
   const { data: authData, error: authErr } = await svc.auth.admin.createUser({
     email: body.email,
     password: body.password,
     email_confirm: true,
-    user_metadata: { full_name: body.full_name },
+    user_metadata: { full_name: body.full_name, role: body.role },
   })
   if (authErr) return NextResponse.json({ error: authErr.message }, { status: 400 })
 
-  const { error: profErr } = await svc.from('profiles').insert({
-    id: authData.user.id,
+  const uid = authData.user.id
+
+  // UPSERT — works whether trigger already created the row or not
+  const { error: profErr } = await svc.from('profiles').upsert({
+    id: uid,
     email: body.email,
     full_name: body.full_name,
     phone: body.phone || null,
     role: body.role,
-  })
+  }, { onConflict: 'id' })
+
   if (profErr) {
-    await svc.auth.admin.deleteUser(authData.user.id)
+    await svc.auth.admin.deleteUser(uid)
     return NextResponse.json({ error: profErr.message }, { status: 400 })
   }
 
-  return NextResponse.json({ ok: true, id: authData.user.id })
+  return NextResponse.json({ ok: true, id: uid })
 }
 
 export async function DELETE(req: NextRequest) {

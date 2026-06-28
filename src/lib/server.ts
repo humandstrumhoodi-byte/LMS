@@ -1,4 +1,4 @@
-import { createServerClient, type CookieMethodsServer } from '@supabase/ssr'
+import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 
 export async function serverSB() {
@@ -10,9 +10,7 @@ export async function serverSB() {
       cookies: {
         getAll: () => c.getAll(),
         setAll: (cs: { name: string; value: string; options?: any }[]) => {
-          try {
-            cs.forEach(({ name, value, options }) => c.set(name, value, options))
-          } catch {}
+          try { cs.forEach(({ name, value, options }) => c.set(name, value, options)) } catch {}
         }
       }
     }
@@ -23,11 +21,6 @@ export async function serviceSB() {
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    {
-      cookies: {
-        getAll: () => [],
-        setAll: (_cs: { name: string; value: string; options?: any }[]) => {}
-      }
-    }
+    { cookies: { getAll: () => [], setAll: (_cs: { name: string; value: string; options?: any }[]) => {} } }
   )
 }
