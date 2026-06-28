@@ -300,7 +300,9 @@ function DashboardShellInner({profile}:{profile:Profile}){
     {id:'schedule',icon:CalendarDays,label:'Schedule',show:perms.viewOwnSchedule},
     {id:'fees',icon:Coins,label:'Fee Structure',show:perms.manageFees},
     {id:'payments',icon:Receipt,label:'Payments',show:perms.viewPayments},
-    {id:'users',icon:ShieldCheck,label:'Users & Roles',show:perms.manageUsers},
+    {id:'reports',   icon:BarChart2,   label:'Reports',       show:perms.viewPayments},
+    {id:'attendance', icon:CheckCircle, label:'Attendance',    show:perms.viewOwnSchedule},
+    {id:'users',      icon:ShieldCheck, label:'Users & Roles', show:perms.manageUsers},
   ].filter(n=>n.show)
 
   return(
