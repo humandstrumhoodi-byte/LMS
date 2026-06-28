@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, Component, ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import { sb } from '@/lib/client'
 import {
@@ -214,12 +214,37 @@ function ImportPanel({type,onImport}:{type:'students'|'payments'|'staff';onImpor
 
 
 // ══════════════════════════════════════════════════════════════
+// ERROR BOUNDARY
+// ══════════════════════════════════════════════════════════════
+class ErrorBoundary extends Component<{children:ReactNode},{hasError:boolean;msg:string}> {
+  constructor(props:any){super(props);this.state={hasError:false,msg:''}}
+  static getDerivedStateFromError(e:Error){return{hasError:true,msg:e.message}}
+  render(){
+    if(this.state.hasError)return(
+      <div className="min-h-screen flex items-center justify-center p-8 bg-gray-50">
+        <div className="max-w-md w-full bg-white rounded-2xl border border-red-100 shadow-sm p-8 text-center">
+          <div className="w-12 h-12 rounded-full bg-red-50 flex items-center justify-center mx-auto mb-4">
+            <span className="text-2xl">⚠️</span>
+          </div>
+          <h2 className="text-lg font-semibold text-gray-900 mb-2">Something went wrong</h2>
+          <p className="text-sm text-gray-500 mb-4">{this.state.msg}</p>
+          <button onClick={()=>window.location.reload()} className="btn-primary mx-auto">Reload page</button>
+          <p className="text-xs text-gray-400 mt-4">If this keeps happening, check the browser console (F12) and share the error.</p>
+        </div>
+      </div>
+    )
+    return this.props.children
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
 // MAIN SHELL
 // ══════════════════════════════════════════════════════════════
-export default function DashboardShell({profile}:{profile:Profile}){
+function DashboardShellInner({profile}:{profile:Profile}){
   const router=useRouter()
   const supabase=sb()
   const perms:Perms=ROLE_PERMS[profile.role as Role]
+  // Safety: catch render errors
   const [tab,setTab]=useState('home')
   const [students,setStudents]=useState<any[]>([])
   const [profiles,setProfiles]=useState<any[]>([])
@@ -231,19 +256,22 @@ export default function DashboardShell({profile}:{profile:Profile}){
   const [packages,setPackages]=useState<any[]>([])
 
   const load=useCallback(async()=>{
+    try{
+    const client=sb()
     const [s,p,sub,sch,f,pay,l,pkg]=await Promise.all([
-      supabase.from('students').select('*, student_subjects(subject_id, package_id, grade_level)').order('full_name'),
-      supabase.from('profiles').select('*').order('full_name'),
-      supabase.from('subjects').select('*').order('name'),
-      supabase.from('class_schedules').select('*, schedule_students(student_id)').order('day_of_week').order('start_time'),
-      supabase.from('fee_structures').select('*'),
-      supabase.from('payments').select('*, students(full_name,email,phone), subjects(name,code,color)').order('created_at',{ascending:false}),
-      supabase.from('leads').select('*').order('created_at',{ascending:false}),
-      supabase.from('subject_packages').select('*, subjects(name,code,color)').order('subject_id').order('grade_level').order('classes_pm'),
+      client.from('students').select('*, student_subjects(subject_id, package_id, grade_level)').order('full_name'),
+      client.from('profiles').select('*').order('full_name'),
+      client.from('subjects').select('*').order('name'),
+      client.from('class_schedules').select('*, schedule_students(student_id)').order('day_of_week').order('start_time'),
+      client.from('fee_structures').select('*'),
+      client.from('payments').select('*, students(full_name,email,phone), subjects(name,code,color)').order('created_at',{ascending:false}),
+      client.from('leads').select('*').order('created_at',{ascending:false}),
+      client.from('subject_packages').select('*, subjects(name,code,color)').order('subject_id').order('grade_level').order('classes_pm').then(r=>r),
     ])
     setStudents(s.data||[]);setProfiles(p.data||[]);setSubjects(sub.data||[])
     setSchedules(sch.data||[]);setFees(f.data||[]);setPayments(pay.data||[]);setLeads(l.data||[])
     setPackages(pkg.data||[])
+    }catch(e){console.error('[LMS load error]',e)}
   },[])
 
   useEffect(()=>{load()},[load])
@@ -1467,4 +1495,8 @@ function PackagesTab({ packages, subjects, reload }: any) {
       </Modal>
     </div>
   )
+}
+
+export default function DashboardShell({profile}:{profile:Profile}){
+  return <ErrorBoundary><DashboardShellInner profile={profile}/></ErrorBoundary>
 }
