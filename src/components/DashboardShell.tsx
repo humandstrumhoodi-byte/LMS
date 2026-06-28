@@ -355,12 +355,12 @@ function DashboardShellInner({profile}:{profile:Profile}){
       <main className="flex-1 overflow-y-auto bg-gray-50">
         <div className="max-w-6xl mx-auto px-6 py-6">
           {tab==='home'&&<HomeTab profile={profile} perms={perms} students={students} profiles={profiles} payments={payments} schedules={schedules} subjects={subjects} leads={leads} setTab={setTab}/>}
-          {tab==='students'&&<StudentsTab students={students} subjects={subjects} packages={packages} fees={fees} reload={load}/>}
+          {tab==='students'&&<StudentsTab students={students} subjects={subjects} packages={packages} fees={fees} schedules={schedules} reload={load}/>}
           {tab==='leads'&&<LeadsTab leads={leads} subjects={subjects} reload={load}/>}
           {tab==='teachers'&&<TeachersTab profiles={profiles} subjects={subjects} reload={load}/>}
           {tab==='subjects'&&<SubjectsTab subjects={subjects} profiles={profiles} students={students} fees={fees} subjectTeachers={subjectTeachers} reload={load}/>}
           {tab==='packages'&&<PackagesTab packages={packages} subjects={subjects} reload={load}/>}
-          {tab==='schedule'&&<ScheduleTab schedules={schedules} subjects={subjects} students={students} profile={profile} perms={perms} reload={load}/>}
+          {tab==='schedule'&&<ScheduleTab schedules={schedules} subjects={subjects} students={students} profiles={profiles} profile={profile} perms={perms} reload={load}/>}
           {tab==='fees'&&<FeesTab subjects={subjects} fees={fees} reload={load}/>}
           {tab==='payments'&&<PaymentsTab payments={payments} students={students} subjects={subjects} fees={fees} perms={perms} reload={load}/>}
           {tab==='reports'&&<ReportsTab students={students} subjects={subjects} payments={payments} profiles={profiles} attendance={attendance}/>}
@@ -557,7 +557,7 @@ function HomeTab({profile,perms,students,profiles,payments,schedules,subjects,le
 }
 
 // ══════════════════════════════════════════════════════════════ STUDENTS
-function StudentsTab({students,subjects,packages,fees,reload}:any){
+function StudentsTab({students,subjects,packages,fees,schedules,reload}:any){
   const supabase=sb()
   const [q,setQ]=useState('')
   const [enrollOpen,setEnrollOpen]=useState(false)
@@ -660,6 +660,7 @@ function StudentsTab({students,subjects,packages,fees,reload}:any){
         student={editing}
         subjects={subjects}
         packages={packages}
+        schedules={schedules||[]}
         onClose={()=>{setEnrollOpen(false);setEditing(null)}}
         reload={reload}
       />}
@@ -1275,95 +1276,383 @@ function SubjectsTab({subjects,profiles,students,fees,subjectTeachers,reload}:an
 }
 
 // ══════════════════════════════════════════════════════════════ SCHEDULE + EMAIL REMINDERS
-function ScheduleTab({schedules,subjects,students,profile,perms,reload}:any){
+function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}:any){
   const supabase=sb()
   const isTeacher=profile.role==='teacher'
-  const mySubjectIds=isTeacher?subjects.filter((s:any)=>s.teacher_id===profile.id).map((s:any)=>s.id):subjects.map((s:any)=>s.id)
-  const visible=schedules.filter((sc:any)=>mySubjectIds.includes(sc.subject_id))
-  const [open,setOpen]=useState(false);const [reminderOpen,setReminderOpen]=useState(false);const [reminderCls,setReminderCls]=useState<any>(null)
-  const [form,setForm]=useState({subject_id:'',day_of_week:'Mon',start_time:'10:00',duration_minutes:60,student_ids:[] as string[]})
-  const [busy,setBusy]=useState(false);const [reminderMsg,setReminderMsg]=useState('');const [sending,setSending]=useState(false);const [sentResult,setSentResult]=useState('')
 
-  async function save(){if(!form.subject_id)return;setBusy(true);const{data:cls}=await supabase.from('class_schedules').insert({subject_id:form.subject_id,day_of_week:form.day_of_week,start_time:form.start_time,duration_minutes:form.duration_minutes}).select().single();if(cls&&form.student_ids.length)await supabase.from('schedule_students').insert(form.student_ids.map(sid=>({schedule_id:cls.id,student_id:sid})));setBusy(false);setOpen(false);reload()}
+  // View mode
+  const [viewMode,setViewMode]=useState<'week'|'day'|'month'>('week')
+  const [selectedDate,setSelectedDate]=useState(new Date())
+  const [filterTeacher,setFilterTeacher]=useState<string>('all')
+  const [filterSubject,setFilterSubject]=useState<string>('all')
+
+  // Add class modal
+  const [open,setOpen]=useState(false)
+  const [reminderOpen,setReminderOpen]=useState(false)
+  const [reminderCls,setReminderCls]=useState<any>(null)
+  const [form,setForm]=useState({subject_id:'',day_of_week:'Sun',start_time:'10:00',duration_minutes:45,student_ids:[] as string[]})
+  const [busy,setBusy]=useState(false)
+  const [reminderMsg,setReminderMsg]=useState('')
+  const [sending,setSending]=useState(false)
+  const [sentResult,setSentResult]=useState('')
+
+  const WORKING_DAYS = ['Sun','Tue','Wed','Thu','Fri','Sat'] // Mon is holiday
+  const DAY_LABELS: Record<string,string> = { Sun:'Sunday', Tue:'Tuesday', Wed:'Wednesday', Thu:'Thursday', Fri:'Friday', Sat:'Saturday' }
+  const SLOT_TIMES = ['08:00','08:30','09:00','09:30','10:00','10:30','11:00','11:30','12:00','12:30','13:00','13:30','14:00','14:30','15:00','15:30','16:00','16:30','17:00','17:30','18:00','18:30','19:00','19:30','20:00']
+
+  // Computed visible schedules
+  const teachers = profiles.filter((p:any)=>['teacher','center_manager','superadmin'].includes(p.role))
+
+  const visible = schedules.filter((sc:any)=>{
+    const sub = subjects.find((s:any)=>s.id===sc.subject_id)
+    if (!sub) return false
+    if (isTeacher && sub.teacher_id !== profile.id) return false
+    if (filterTeacher !== 'all' && sub.teacher_id !== filterTeacher) return false
+    if (filterSubject !== 'all' && sc.subject_id !== filterSubject) return false
+    return true
+  })
+
+  const subById=(id:string)=>subjects.find((s:any)=>s.id===id)
+
+  async function save(){
+    if(!form.subject_id)return;setBusy(true)
+    const{data:cls}=await supabase.from('class_schedules').insert({subject_id:form.subject_id,day_of_week:form.day_of_week,start_time:form.start_time,duration_minutes:form.duration_minutes}).select().single()
+    if(cls&&form.student_ids.length)await supabase.from('schedule_students').insert(form.student_ids.map(sid=>({schedule_id:cls.id,student_id:sid})))
+    setBusy(false);setOpen(false);reload()
+  }
   async function del(id:string){if(!confirm('Remove class?'))return;await supabase.from('class_schedules').delete().eq('id',id);reload()}
-
   async function sendReminders(){
     if(!reminderCls)return;setSending(true);setSentResult('')
     const schedStudentIds=(reminderCls.schedule_students||[]).map((ss:any)=>ss.student_id)
     const sub=subjects.find((s:any)=>s.id===reminderCls.subject_id)
-    const teacher=sub?.teacher_id?[sub.teacher_id]:[]
-    const r=await fetch('/api/email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'class_reminder',scheduleId:reminderCls.id,studentIds:schedStudentIds,teacherIds:teacher,customMessage:reminderMsg})})
+    const r=await fetch('/api/email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'class_reminder',scheduleId:reminderCls.id,studentIds:schedStudentIds,teacherIds:sub?.teacher_id?[sub.teacher_id]:[],customMessage:reminderMsg})})
     const d=await r.json()
-    setSending(false);setSentResult(d.ok?`✓ Sent ${d.sent} email${d.sent!==1?'s':''}${d.dev?' (console mode — add RESEND_API_KEY to actually send)':''}`:`Error: ${d.error}`)
+    setSending(false);setSentResult(d.ok?`✓ Sent ${d.sent} emails`:`Error: ${d.error}`)
   }
 
-  const subById=(id:string)=>subjects.find((s:any)=>s.id===id)
+  // ── WEEKLY VIEW ──────────────────────────────────────────────
+  function WeekView() {
+    return (
+      <div className="card overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs" style={{minWidth:700}}>
+            <thead>
+              <tr>
+                <th className="bg-gray-50 border-b border-r border-gray-100 px-2 py-2 text-gray-400 font-mono w-14 text-center">Time</th>
+                {WORKING_DAYS.map(d=>(
+                  <th key={d} className={clsx('bg-gray-50 border-b border-gray-100 px-2 py-2 text-center font-semibold text-xs',
+                    d===(['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date().getDay()])?'text-brand-600 bg-brand-50/50':'text-gray-500'
+                  )}>
+                    <div>{d}</div>
+                    {d===(['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date().getDay()])&&<div className="text-xs text-brand-400 font-normal">Today</div>}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {SLOT_TIMES.map((time,ti)=>{
+                const hasAny = WORKING_DAYS.some(d=>visible.some((sc:any)=>sc.day_of_week===d&&sc.start_time?.slice(0,5)===time))
+                // Only show 30-min slots that have content, or on-the-hour slots
+                const isHour = time.endsWith(':00')
+                if (!isHour && !hasAny) return null
+                return(
+                  <tr key={time} className={isHour?'border-t border-gray-100':''}>
+                    <td className={clsx('border-r border-gray-100 px-2 text-center font-mono text-gray-400', isHour?'py-1.5':'py-0.5 text-gray-300 text-xs')}>
+                      {isHour?time:<span className="text-xs opacity-50">{time.slice(3)}</span>}
+                    </td>
+                    {WORKING_DAYS.map(day=>{
+                      const cls=visible.filter((sc:any)=>sc.day_of_week===day&&sc.start_time?.slice(0,5)===time)
+                      return(
+                        <td key={day} className="px-1 py-0.5 align-top" style={{minHeight:28}}>
+                          {cls.map((c:any)=>{
+                            const sub=subById(c.subject_id)
+                            const stuCount=(c.schedule_students||[]).length
+                            const teacher=profiles.find((p:any)=>p.id===sub?.teacher_id)
+                            return sub?(
+                              <div key={c.id}
+                                className={clsx('rounded-lg px-2 py-1.5 mb-0.5 text-xs font-medium cursor-pointer hover:opacity-80 border',colorCell[sub.color]||colorCell.violet)}
+                                onClick={()=>{setReminderCls(c);setReminderOpen(true);setSentResult('')}}>
+                                <div className="font-semibold truncate">{sub.name}</div>
+                                <div className="opacity-70 text-xs">{c.duration_minutes}m · {stuCount} stu</div>
+                                {teacher&&<div className="opacity-60 text-xs truncate">{teacher.full_name.split(' ')[0]}</div>}
+                              </div>
+                            ):null
+                          })}
+                        </td>
+                      )
+                    })}
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )
+  }
+
+  // ── DAILY VIEW ───────────────────────────────────────────────
+  function DayView() {
+    const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
+    const dayName = dayNames[selectedDate.getDay()]
+    const dayClasses = visible.filter((sc:any)=>sc.day_of_week===dayName).sort((a:any,b:any)=>a.start_time?.localeCompare(b.start_time))
+    const isHoliday = dayName === 'Mon'
+
+    return (
+      <div className="space-y-3">
+        {/* Date nav */}
+        <div className="flex items-center justify-between">
+          <button onClick={()=>{const d=new Date(selectedDate);d.setDate(d.getDate()-1);setSelectedDate(d)}} className="btn btn-sm">← Prev</button>
+          <div className="text-center">
+            <div className="font-semibold text-gray-900">{selectedDate.toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long'})}</div>
+            {isHoliday && <div className="text-xs text-red-500 mt-0.5">🚫 Monday — Holiday</div>}
+          </div>
+          <button onClick={()=>{const d=new Date(selectedDate);d.setDate(d.getDate()+1);setSelectedDate(d)}} className="btn btn-sm">Next →</button>
+        </div>
+
+        {isHoliday ? (
+          <div className="card p-12 text-center">
+            <div className="text-4xl mb-3">🎉</div>
+            <h3 className="font-semibold text-gray-900 mb-1">Monday — Holiday</h3>
+            <p className="text-sm text-gray-400">No classes on Mondays. The academy is closed.</p>
+          </div>
+        ) : dayClasses.length === 0 ? (
+          <div className="card p-12 text-center text-gray-300">
+            <CalendarDays className="w-10 h-10 mx-auto mb-3 opacity-30"/>
+            <p>No classes on {dayName}</p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {dayClasses.map((c:any)=>{
+              const sub=subById(c.subject_id)
+              const teacher=profiles.find((p:any)=>p.id===sub?.teacher_id)
+              const stuCount=(c.schedule_students||[]).length
+              const stuNames=(c.schedule_students||[]).map((ss:any)=>students.find((st:any)=>st.id===ss.student_id)).filter(Boolean)
+              return(
+                <div key={c.id} className="card p-4">
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="flex items-center gap-3">
+                      <div className={clsx('w-3 w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0', colorBadge[sub?.color]||colorBadge.violet)}>
+                        <span className="font-bold text-sm">{sub?.code}</span>
+                      </div>
+                      <div>
+                        <div className="font-semibold text-gray-900">{sub?.name}</div>
+                        <div className="text-xs text-gray-400">{c.start_time?.slice(0,5)} · {c.duration_minutes} min</div>
+                        {teacher&&<div className="text-xs text-gray-400 mt-0.5">👤 {teacher.full_name}</div>}
+                      </div>
+                    </div>
+                    <div className="flex gap-1">
+                      <button onClick={()=>{setReminderCls(c);setReminderOpen(true);setSentResult('')}} className="btn btn-sm text-brand-600 border-brand-200"><Mail className="w-3 h-3"/></button>
+                      {!isTeacher&&<button onClick={()=>del(c.id)} className="btn btn-sm btn-danger"><Trash2 className="w-3 h-3"/></button>}
+                    </div>
+                  </div>
+                  <div className="border-t border-gray-100 pt-2">
+                    <div className="text-xs text-gray-400 mb-1.5">Students ({stuCount})</div>
+                    <div className="flex flex-wrap gap-1">
+                      {stuNames.map((s:any)=><span key={s.id} className="badge bg-gray-100 text-gray-600 text-xs">{s.full_name}</span>)}
+                      {!stuNames.length&&<span className="text-xs text-gray-300">No students assigned</span>}
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // ── MONTHLY VIEW ─────────────────────────────────────────────
+  function MonthView() {
+    const year = selectedDate.getFullYear()
+    const month = selectedDate.getMonth()
+    const firstDay = new Date(year, month, 1).getDay() // 0=Sun
+    const daysInMonth = new Date(year, month + 1, 0).getDate()
+    const today = new Date()
+
+    const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
+    const cells: (number|null)[] = [...Array(firstDay).fill(null), ...Array.from({length:daysInMonth},(_,i)=>i+1)]
+    while(cells.length % 7 !== 0) cells.push(null)
+
+    function classesOnDay(dayNum: number) {
+      const dayName = dayNames[new Date(year, month, dayNum).getDay()]
+      return visible.filter((sc:any)=>sc.day_of_week===dayName)
+    }
+
+    return (
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <button onClick={()=>{const d=new Date(selectedDate);d.setMonth(d.getMonth()-1);setSelectedDate(d)}} className="btn btn-sm">← Prev</button>
+          <div className="font-semibold text-gray-900">{selectedDate.toLocaleDateString('en-IN',{month:'long',year:'numeric'})}</div>
+          <button onClick={()=>{const d=new Date(selectedDate);d.setMonth(d.getMonth()+1);setSelectedDate(d)}} className="btn btn-sm">Next →</button>
+        </div>
+        <div className="card overflow-hidden">
+          <div className="grid grid-cols-7 border-b border-gray-100">
+            {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d=>(
+              <div key={d} className={clsx('px-2 py-2 text-xs font-semibold text-center', d==='Mon'?'text-red-400 bg-red-50/50':'text-gray-400 bg-gray-50')}>
+                {d}{d==='Mon'&&<span className="block text-xs font-normal text-red-300">Holiday</span>}
+              </div>
+            ))}
+          </div>
+          <div className="grid grid-cols-7">
+            {cells.map((day, i) => {
+              if (!day) return <div key={i} className="border-b border-r border-gray-50 min-h-[80px] bg-gray-50/30"/>
+              const isToday = day===today.getDate()&&month===today.getMonth()&&year===today.getFullYear()
+              const dayName = dayNames[new Date(year,month,day).getDay()]
+              const isHoliday = dayName === 'Mon'
+              const dayCls = classesOnDay(day)
+              return(
+                <div key={i} className={clsx('border-b border-r border-gray-100 min-h-[80px] p-1.5 cursor-pointer transition-colors',
+                  isHoliday?'bg-red-50/30':isToday?'bg-brand-50/30':'hover:bg-gray-50/50',
+                  (i+1)%7===0?'border-r-0':''
+                )}
+                onClick={()=>{if(!isHoliday){setSelectedDate(new Date(year,month,day));setViewMode('day')}}}>
+                  <div className={clsx('text-xs font-semibold mb-1 w-6 h-6 flex items-center justify-center rounded-full',
+                    isToday?'bg-brand-500 text-white':isHoliday?'text-red-300':'text-gray-600'
+                  )}>{day}</div>
+                  {isHoliday&&<div className="text-xs text-red-300">Closed</div>}
+                  {dayCls.slice(0,3).map((c:any)=>{
+                    const sub=subById(c.subject_id)
+                    return sub?<div key={c.id} className={clsx('text-xs px-1 py-0.5 rounded mb-0.5 truncate',colorCell[sub.color]||colorCell.violet)}>
+                      {c.start_time?.slice(0,5)} {sub.code}
+                    </div>:null
+                  })}
+                  {dayCls.length>3&&<div className="text-xs text-gray-400">+{dayCls.length-3} more</div>}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return(
     <div className="animate-fu">
-      <div className="flex items-center justify-between mb-5">
-        <div><h1 className="text-xl font-semibold text-gray-900">{isTeacher?'My Schedule':'Class Schedule'}</h1><p className="text-sm text-gray-400 mt-0.5">Weekly timetable</p></div>
+      {/* Header */}
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h1 className="text-xl font-semibold text-gray-900">{isTeacher?'My Schedule':'Class Schedule'}</h1>
+          <div className="flex items-center gap-2 mt-0.5">
+            <span className="text-xs text-gray-400">Mon = Holiday · Sun = Working Day</span>
+          </div>
+        </div>
         {!isTeacher&&<button onClick={()=>setOpen(true)} className="btn-primary"><Plus className="w-4 h-4"/> Add Class</button>}
       </div>
-      <div className="card overflow-hidden mb-5"><div className="overflow-x-auto"><table className="w-full text-xs" style={{minWidth:600}}>
-        <thead><tr><th className="th w-16 bg-gray-50">Time</th>{DAYS.map(d=><th key={d} className="th bg-gray-50 text-center">{d}</th>)}</tr></thead>
-        <tbody>{TIMES.map(time=><tr key={time}><td className="td text-gray-400 bg-gray-50/60 text-center font-mono">{time}</td>{DAYS.map(day=>{const cls=visible.filter((sc:any)=>sc.day_of_week===day&&sc.start_time?.slice(0,5)===time);return<td key={day} className="td align-top" style={{minHeight:40}}>{cls.map((c:any)=>{const sub=subById(c.subject_id);return sub?<div key={c.id} className={clsx('rounded px-1.5 py-1 mb-0.5 text-xs font-medium cursor-pointer hover:opacity-80',colorCell[sub.color]||colorCell.violet)} onClick={()=>{setReminderCls(c);setReminderOpen(true);setSentResult('')}}>{sub.code} {c.duration_minutes}m <Mail className="w-2.5 h-2.5 inline opacity-60"/></div>:null})}</td>})}</tr>)}</tbody>
-      </table></div></div>
-      <div className="card">
-        <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between"><span className="text-sm font-medium text-gray-700">All Classes</span><span className="text-xs text-gray-400">Click a cell above to send reminders</span></div>
-        <table className="w-full">
-          <thead><tr><th className="th">Subject</th><th className="th">Day</th><th className="th">Time</th><th className="th">Duration</th><th className="th">Students</th><th className="th w-28">Actions</th></tr></thead>
-          <tbody>
-            {visible.map((c:any)=>{const sub=subById(c.subject_id);const stuNames=(c.schedule_students||[]).map((ss:any)=>{const s=students.find((st:any)=>st.id===ss.student_id);return s?.full_name?.split(' ')[0]||''}).filter(Boolean);return(
-              <tr key={c.id} className="hover:bg-gray-50/50">
-                <td className="td">{sub&&<span className={clsx('badge',colorBadge[sub.color]||colorBadge.violet)}>{sub.name}</span>}</td>
-                <td className="td font-medium">{c.day_of_week}</td>
-                <td className="td font-mono">{c.start_time?.slice(0,5)}</td>
-                <td className="td text-gray-400">{c.duration_minutes}m</td>
-                <td className="td"><div className="flex flex-wrap gap-1">{stuNames.map((n:string,i:number)=><span key={i} className="badge bg-gray-100 text-gray-600">{n}</span>)}{!stuNames.length&&<span className="text-gray-300">—</span>}</div></td>
-                <td className="td"><div className="flex gap-1">
-                  <button onClick={()=>{setReminderCls(c);setReminderOpen(true);setSentResult('')}} className="btn btn-sm text-brand-600 border-brand-200 hover:bg-brand-50" title="Send reminders"><Mail className="w-3 h-3"/> Remind</button>
-                  {!isTeacher&&<button onClick={()=>del(c.id)} className="btn btn-sm btn-danger"><Trash2 className="w-3 h-3"/></button>}
-                </div></td>
-              </tr>
-            )})}
-            {!visible.length&&<tr><td colSpan={6} className="td text-center text-gray-300 py-8">No classes</td></tr>}
-          </tbody>
-        </table>
+
+      {/* Controls bar */}
+      <div className="flex flex-wrap items-center gap-3 mb-4">
+        {/* View toggle */}
+        <div className="flex rounded-xl border border-gray-200 overflow-hidden">
+          {(['week','day','month'] as const).map(v=>(
+            <button key={v} onClick={()=>setViewMode(v)}
+              className={clsx('px-3 py-1.5 text-sm font-medium capitalize transition-colors',
+                viewMode===v?'bg-brand-500 text-white':'text-gray-500 hover:bg-gray-50'
+              )}>{v}</button>
+          ))}
+        </div>
+
+        {/* Date nav for day/month */}
+        {viewMode==='day'&&(
+          <div className="flex items-center gap-2">
+            <button onClick={()=>{const d=new Date(selectedDate);d.setDate(d.getDate()-1);setSelectedDate(d)}} className="btn btn-sm">←</button>
+            <span className="text-sm font-medium text-gray-700">{selectedDate.toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short'})}</span>
+            <button onClick={()=>{const d=new Date(selectedDate);d.setDate(d.getDate()+1);setSelectedDate(d)}} className="btn btn-sm">→</button>
+            <button onClick={()=>setSelectedDate(new Date())} className="btn btn-sm text-brand-500">Today</button>
+          </div>
+        )}
+
+        {/* Filters */}
+        {!isTeacher&&(
+          <>
+            <select className="input py-1.5 text-sm" value={filterTeacher} onChange={e=>setFilterTeacher(e.target.value)}>
+              <option value="all">All Teachers</option>
+              {teachers.map((t:any)=><option key={t.id} value={t.id}>{t.full_name}</option>)}
+            </select>
+            <select className="input py-1.5 text-sm" value={filterSubject} onChange={e=>setFilterSubject(e.target.value)}>
+              <option value="all">All Instruments</option>
+              {subjects.map((s:any)=><option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </>
+        )}
+
+        <div className="ml-auto text-xs text-gray-400">{visible.length} classes</div>
       </div>
 
-      {/* Email reminder modal */}
+      {/* View content */}
+      {viewMode==='week'&&<WeekView/>}
+      {viewMode==='day'&&<DayView/>}
+      {viewMode==='month'&&<MonthView/>}
+
+      {/* List view below week */}
+      {viewMode==='week'&&(
+        <div className="card mt-4">
+          <div className="px-5 py-3 border-b border-gray-100 text-sm font-medium text-gray-700">All Scheduled Classes</div>
+          <table className="w-full">
+            <thead><tr>
+              <th className="th">Subject</th>
+              <th className="th">Day</th>
+              <th className="th">Time</th>
+              <th className="th">Duration</th>
+              <th className="th">Teacher</th>
+              <th className="th">Students</th>
+              <th className="th w-24">Actions</th>
+            </tr></thead>
+            <tbody>
+              {[...visible].sort((a:any,b:any)=>{
+                const di=WORKING_DAYS.indexOf(a.day_of_week)-WORKING_DAYS.indexOf(b.day_of_week)
+                return di||a.start_time?.localeCompare(b.start_time)
+              }).map((c:any)=>{
+                const sub=subById(c.subject_id)
+                const teacher=profiles.find((p:any)=>p.id===sub?.teacher_id)
+                const stuNames=(c.schedule_students||[]).map((ss:any)=>students.find((st:any)=>st.id===ss.student_id)).filter(Boolean)
+                return(
+                  <tr key={c.id} className="hover:bg-gray-50/50">
+                    <td className="td">{sub&&<span className={clsx('badge',colorBadge[sub.color]||colorBadge.violet)}>{sub.name}</span>}</td>
+                    <td className="td font-medium">{c.day_of_week}</td>
+                    <td className="td font-mono text-sm">{c.start_time?.slice(0,5)}</td>
+                    <td className="td text-gray-400">{c.duration_minutes}m</td>
+                    <td className="td text-sm text-gray-500">{teacher?.full_name||'—'}</td>
+                    <td className="td"><div className="flex flex-wrap gap-1">{stuNames.slice(0,3).map((s:any)=><span key={s.id} className="badge bg-gray-100 text-gray-600 text-xs">{s.full_name.split(' ')[0]}</span>)}{stuNames.length>3&&<span className="badge bg-gray-100 text-gray-400">+{stuNames.length-3}</span>}</div></td>
+                    <td className="td"><div className="flex gap-1">
+                      <button onClick={()=>{setReminderCls(c);setReminderOpen(true);setSentResult('')}} className="btn btn-sm text-brand-600 border-brand-200 hover:bg-brand-50" title="Send reminders"><Mail className="w-3 h-3"/></button>
+                      {!isTeacher&&<button onClick={()=>del(c.id)} className="btn btn-sm btn-danger"><Trash2 className="w-3 h-3"/></button>}
+                    </div></td>
+                  </tr>
+                )
+              })}
+              {!visible.length&&<tr><td colSpan={7} className="td text-center text-gray-300 py-8">No classes scheduled</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Reminder modal */}
       <Modal open={reminderOpen} onClose={()=>setReminderOpen(false)} title="Send Class Reminders" wide>
         {reminderCls&&(()=>{
           const sub=subById(reminderCls.subject_id)
           const schedStudents=(reminderCls.schedule_students||[]).map((ss:any)=>students.find((st:any)=>st.id===ss.student_id)).filter(Boolean)
-          const teacher=sub?.teacher_id?subjects.find((s:any)=>s.id===reminderCls.subject_id):null
           return(
             <div className="space-y-4">
               <div className="bg-brand-50 rounded-xl p-4 text-sm">
-                <div className="font-semibold text-brand-700 mb-2">📧 Reminder for: {sub?.name}</div>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div><span className="text-gray-400">Day/Time: </span><strong>{reminderCls.day_of_week} at {reminderCls.start_time?.slice(0,5)}</strong></div>
-                  <div><span className="text-gray-400">Duration: </span><strong>{reminderCls.duration_minutes} min</strong></div>
-                </div>
+                <div className="font-semibold text-brand-700 mb-2">📧 {sub?.name} — {reminderCls.day_of_week} at {reminderCls.start_time?.slice(0,5)}</div>
+                <div className="text-xs text-brand-600">{reminderCls.duration_minutes} min · {schedStudents.length} students</div>
               </div>
               <div>
                 <div className="label mb-2">Recipients</div>
-                <div className="space-y-1">
+                <div className="space-y-1 max-h-40 overflow-y-auto">
                   {schedStudents.map((s:any)=><div key={s.id} className="flex items-center justify-between text-sm px-3 py-1.5 bg-gray-50 rounded-lg">
                     <span>{s.full_name}</span>
-                    <span className="text-xs text-gray-400">{s.email||<span className="text-red-400">No email</span>}</span>
+                    <span className={clsx('text-xs',s.email?'text-gray-400':'text-red-400')}>{s.email||'No email'}</span>
                   </div>)}
-                  {!schedStudents.length&&<div className="text-sm text-gray-400 px-3 py-2">No students assigned to this class</div>}
+                  {!schedStudents.length&&<div className="text-sm text-gray-400 px-3">No students assigned</div>}
                 </div>
               </div>
               <div>
                 <label className="label">Custom Note (optional)</label>
-                <textarea className="input" rows={2} placeholder="e.g. Please bring your instrument. Class is online today." value={reminderMsg} onChange={e=>setReminderMsg(e.target.value)}/>
+                <textarea className="input" rows={2} placeholder="e.g. Please bring your instrument" value={reminderMsg} onChange={e=>setReminderMsg(e.target.value)}/>
               </div>
-              {sentResult&&<div className={clsx('px-3 py-2 rounded-lg text-sm',sentResult.startsWith('✓')?'bg-emerald-50 text-emerald-700 border border-emerald-100':'bg-red-50 text-red-600')}>{sentResult}</div>}
-              <div className="text-xs text-gray-400 bg-gray-50 rounded-lg p-3">
-                <strong>Email setup:</strong> Add <code>RESEND_API_KEY</code> and <code>EMAIL_FROM</code> to your Vercel environment variables to send real emails. Without it, emails are logged to console. Get a free key at <a href="https://resend.com" target="_blank" className="text-brand-500 underline">resend.com</a> (100 emails/day free).
-              </div>
+              {sentResult&&<div className={clsx('px-3 py-2 rounded-lg text-sm',sentResult.startsWith('✓')?'bg-emerald-50 text-emerald-700':'bg-red-50 text-red-600')}>{sentResult}</div>}
               <div className="flex justify-end gap-2">
                 <button className="btn" onClick={()=>setReminderOpen(false)}>Close</button>
                 <button className="btn-primary" onClick={sendReminders} disabled={sending||!schedStudents.filter((s:any)=>s.email).length}>
@@ -1376,21 +1665,97 @@ function ScheduleTab({schedules,subjects,students,profile,perms,reload}:any){
         })()}
       </Modal>
 
+      {/* Add class modal */}
       {!isTeacher&&<Modal open={open} onClose={()=>setOpen(false)} title="Schedule Class" wide>
-        <div className="space-y-3">
-          <div><label className="label">Subject *</label><select className="input" value={form.subject_id} onChange={e=>setForm(f=>({...f,subject_id:e.target.value}))}><option value="">— Select —</option>{subjects.map((s:any)=><option key={s.id} value={s.id}>{s.name}</option>)}</select></div>
-          <div className="grid grid-cols-3 gap-3">
-            <div><label className="label">Day</label><select className="input" value={form.day_of_week} onChange={e=>setForm(f=>({...f,day_of_week:e.target.value}))}>{DAYS.map(d=><option key={d}>{d}</option>)}</select></div>
-            <div><label className="label">Start Time</label><select className="input" value={form.start_time} onChange={e=>setForm(f=>({...f,start_time:e.target.value}))}>{TIMES.map(t=><option key={t}>{t}</option>)}</select></div>
-            <div><label className="label">Duration (min)</label><input className="input" type="number" min={15} step={15} value={form.duration_minutes} onChange={e=>setForm(f=>({...f,duration_minutes:+e.target.value}))}/></div>
+        <div className="space-y-4">
+          <div>
+            <label className="label">Instrument *</label>
+            <select className="input" value={form.subject_id} onChange={e=>setForm((f:any)=>({...f,subject_id:e.target.value}))}>
+              <option value="">— Select instrument —</option>
+              {subjects.map((s:any)=><option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
           </div>
-          <div><label className="label">Students</label><div className="grid grid-cols-2 gap-1.5 mt-1 max-h-40 overflow-y-auto">{students.map((s:any)=><label key={s.id} className="flex items-center gap-2 text-sm cursor-pointer"><input type="checkbox" checked={form.student_ids.includes(s.id)} onChange={()=>setForm(f=>({...f,student_ids:f.student_ids.includes(s.id)?f.student_ids.filter(x=>x!==s.id):[...f.student_ids,s.id]}))} className="rounded border-gray-300"/>{s.full_name}</label>)}</div></div>
-          <div className="flex justify-end gap-2 pt-2"><button className="btn" onClick={()=>setOpen(false)}>Cancel</button><button className="btn-primary" onClick={save} disabled={busy}>{busy?<Loader2 className="w-4 h-4 animate-spin"/>:null}Schedule</button></div>
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="label">Day</label>
+              <select className="input" value={form.day_of_week} onChange={e=>setForm((f:any)=>({...f,day_of_week:e.target.value}))}>
+                {WORKING_DAYS.map(d=><option key={d} value={d}>{DAY_LABELS[d]}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="label">Start Time</label>
+              <select className="input" value={form.start_time} onChange={e=>setForm((f:any)=>({...f,start_time:e.target.value}))}>
+                {SLOT_TIMES.map(t=><option key={t}>{t}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="label">Duration (min)</label>
+              <select className="input" value={form.duration_minutes} onChange={e=>setForm((f:any)=>({...f,duration_minutes:+e.target.value}))}>
+                {[30,45,60,90].map(d=><option key={d} value={d}>{d} min</option>)}
+              </select>
+            </div>
+          </div>
+
+          {/* Free slots preview */}
+          {form.subject_id&&(()=>{
+            const bookedSlots=schedules.filter((sc:any)=>sc.subject_id===form.subject_id&&sc.day_of_week===form.day_of_week).map((sc:any)=>sc.start_time?.slice(0,5))
+            const conflictSlots=schedules.filter((sc:any)=>sc.day_of_week===form.day_of_week).map((sc:any)=>sc.start_time?.slice(0,5))
+            return(
+              <div>
+                <div className="label mb-2">Slot availability for {form.day_of_week}</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {SLOT_TIMES.map(t=>{
+                    const isBooked=bookedSlots.includes(t)
+                    const hasConflict=conflictSlots.includes(t)
+                    const isSelected=form.start_time===t
+                    return(
+                      <button key={t} type="button"
+                        onClick={()=>!isBooked&&setForm((f:any)=>({...f,start_time:t}))}
+                        className={clsx('px-2.5 py-1 rounded-lg text-xs font-mono font-medium border transition-all',
+                          isBooked?'bg-red-50 text-red-400 border-red-100 cursor-not-allowed line-through':
+                          isSelected?'bg-brand-500 text-white border-brand-500':
+                          hasConflict?'bg-amber-50 text-amber-600 border-amber-100':
+                          'bg-emerald-50 text-emerald-700 border-emerald-100 hover:bg-emerald-100 cursor-pointer'
+                        )}>
+                        {t}
+                      </button>
+                    )
+                  })}
+                </div>
+                <div className="flex gap-3 mt-2 text-xs text-gray-400">
+                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-emerald-100 inline-block"/>Free</span>
+                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-amber-100 inline-block"/>Other class</span>
+                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-red-100 inline-block"/>Booked for this subject</span>
+                </div>
+              </div>
+            )
+          })()}
+
+          <div>
+            <label className="label">Assign Students</label>
+            <div className="grid grid-cols-2 gap-1.5 mt-1 max-h-40 overflow-y-auto">
+              {students.map((s:any)=>(
+                <label key={s.id} className="flex items-center gap-2 text-sm cursor-pointer p-1.5 rounded-lg hover:bg-gray-50">
+                  <input type="checkbox" checked={form.student_ids.includes(s.id)}
+                    onChange={()=>setForm((f:any)=>({...f,student_ids:f.student_ids.includes(s.id)?f.student_ids.filter((x:string)=>x!==s.id):[...f.student_ids,s.id]}))}
+                    className="rounded border-gray-300"/>
+                  <span className="truncate">{s.full_name}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <button className="btn" onClick={()=>setOpen(false)}>Cancel</button>
+            <button className="btn-primary" onClick={save} disabled={busy}>
+              {busy?<Loader2 className="w-4 h-4 animate-spin"/>:null}Schedule Class
+            </button>
+          </div>
         </div>
       </Modal>}
     </div>
   )
 }
+
 
 // ══════════════════════════════════════════════════════════════ FEES
 function FeesTab({subjects,fees,reload}:any){
@@ -3873,7 +4238,7 @@ function AttendanceTab({ schedules, subjects, students, profiles, profile, atten
 const ENROLLMENT_STEPS = ['Personal','Guardian & Medical','Instrument & Package','Invoice'] as const
 type EnrollStep = typeof ENROLLMENT_STEPS[number]
 
-function EnrollmentModal({ student, subjects, packages, onClose, reload }: any) {
+function EnrollmentModal({ student, subjects, packages, schedules, onClose, reload }: any) {
   const supabase = sb()
   const isEdit = !!student
   const [step, setStep] = useState<EnrollStep>('Personal')
@@ -4257,6 +4622,35 @@ function EnrollmentModal({ student, subjects, packages, onClose, reload }: any) 
                   ))}
                 </div>
               </div>
+
+              {/* Free slot picker */}
+              {p.subject_ids.length > 0 && (
+                <div>
+                  <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Available Class Slots</div>
+                  <div className="space-y-3">
+                    {['Sun','Tue','Wed','Thu','Fri','Sat'].map(day => {
+                      const bookedSlots = schedules.filter((sc:any) => p.subject_ids.includes(sc.subject_id) && sc.day_of_week === day).map((sc:any) => sc.start_time?.slice(0,5))
+                      const allSlots = ['09:00','10:00','10:30','11:00','11:30','12:00','14:00','15:00','16:00','17:00','18:00','19:00']
+                      const freeSlots = allSlots.filter(t => !bookedSlots.includes(t))
+                      if (!freeSlots.length) return null
+                      return (
+                        <div key={day}>
+                          <div className="text-xs font-medium text-gray-500 mb-1.5">{day === 'Sun' ? 'Sunday' : day === 'Tue' ? 'Tuesday' : day === 'Wed' ? 'Wednesday' : day === 'Thu' ? 'Thursday' : day === 'Fri' ? 'Friday' : 'Saturday'}</div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {freeSlots.map(t => (
+                              <span key={t} className="px-2.5 py-1 rounded-lg text-xs font-mono bg-emerald-50 text-emerald-700 border border-emerald-100">{t}</span>
+                            ))}
+                            {bookedSlots.map((t:string) => (
+                              <span key={t} className="px-2.5 py-1 rounded-lg text-xs font-mono bg-gray-100 text-gray-400 line-through">{t}</span>
+                            ))}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <p className="text-xs text-gray-400 mt-2">Green = available · Strikethrough = already booked for this instrument. Assign a class slot from the Schedule tab after enrollment.</p>
+                </div>
+              )}
 
               {p.subject_ids.length > 0 && subjectPackages.length > 0 && (
                 <div>
