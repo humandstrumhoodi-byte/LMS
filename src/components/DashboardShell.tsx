@@ -257,20 +257,23 @@ function DashboardShellInner({profile}:{profile:Profile}){
 
   const load=useCallback(async()=>{
     try{
-    const client=sb()
-    const [s,p,sub,sch,f,pay,l,pkg]=await Promise.all([
-      client.from('students').select('*, student_subjects(subject_id, package_id, grade_level)').order('full_name'),
-      client.from('profiles').select('*').order('full_name'),
-      client.from('subjects').select('*').order('name'),
-      client.from('class_schedules').select('*, schedule_students(student_id)').order('day_of_week').order('start_time'),
-      client.from('fee_structures').select('*'),
-      client.from('payments').select('*, students(full_name,email,phone), subjects(name,code,color)').order('created_at',{ascending:false}),
-      client.from('leads').select('*').order('created_at',{ascending:false}),
-      client.from('subject_packages').select('*, subjects(name,code,color)').order('subject_id').order('grade_level').order('classes_pm').then(r=>r),
-    ])
-    setStudents(s.data||[]);setProfiles(p.data||[]);setSubjects(sub.data||[])
-    setSchedules(sch.data||[]);setFees(f.data||[]);setPayments(pay.data||[]);setLeads(l.data||[])
-    setPackages(pkg.data||[])
+      const client=sb()
+      const [s,p,sub,sch,f,pay,l] = await Promise.all([
+        client.from('students').select('*, student_subjects(subject_id)').order('full_name'),
+        client.from('profiles').select('*').order('full_name'),
+        client.from('subjects').select('*').order('name'),
+        client.from('class_schedules').select('*, schedule_students(student_id)').order('day_of_week').order('start_time'),
+        client.from('fee_structures').select('*'),
+        client.from('payments').select('*, students(full_name,email,phone), subjects(name,code,color)').order('created_at',{ascending:false}),
+        client.from('leads').select('*').order('created_at',{ascending:false}),
+      ])
+      setStudents(s.data||[]);setProfiles(p.data||[]);setSubjects(sub.data||[])
+      setSchedules(sch.data||[]);setFees(f.data||[]);setPayments(pay.data||[]);setLeads(l.data||[])
+      // Load packages separately — table may not exist if SQL migration hasn't run
+      try{
+        const pkg = await client.from('subject_packages').select('*, subjects(name,code,color)').order('subject_id').order('grade_level').order('classes_pm')
+        setPackages(pkg.data||[])
+      }catch(pkgErr){ console.warn('[subject_packages] Table may not exist yet — run add_packages.sql in Supabase') }
     }catch(e){console.error('[LMS load error]',e)}
   },[])
 
@@ -316,15 +319,15 @@ function DashboardShellInner({profile}:{profile:Profile}){
       </aside>
       <main className="flex-1 overflow-y-auto bg-gray-50">
         <div className="max-w-6xl mx-auto px-6 py-6">
-          {tab==='home'&&<HomeTab profile={profile} perms={perms} students={students} profiles={profiles} payments={payments} schedules={schedules} leads={leads} setTab={setTab}/>}
-          {tab==='students'&&<StudentsTab students={students} reload={load}/>}
-          {tab==='leads'&&<LeadsTab leads={leads} reload={load}/>}
-          {tab==='teachers'&&<TeachersTab profiles={profiles} reload={load}/>}
-          {tab==='subjects'&&<SubjectsTab profiles={profiles} students={students} fees={fees} reload={load}/>}
-          {tab==='packages'&&<PackagesTab packages={packages} reload={load}/>}
-          {tab==='schedule'&&<ScheduleTab schedules={schedules} students={students} profile={profile} perms={perms} reload={load}/>}
-          {tab==='fees'&&<FeesTab fees={fees} reload={load}/>}
-          {tab==='payments'&&<PaymentsTab payments={payments} students={students} fees={fees} perms={perms} reload={load}/>}
+          {tab==='home'&&<HomeTab profile={profile} perms={perms} students={students} profiles={profiles} payments={payments} schedules={schedules} subjects={subjects} leads={leads} setTab={setTab}/>}
+          {tab==='students'&&<StudentsTab students={students} subjects={subjects} reload={load}/>}
+          {tab==='leads'&&<LeadsTab leads={leads} subjects={subjects} reload={load}/>}
+          {tab==='teachers'&&<TeachersTab profiles={profiles} subjects={subjects} reload={load}/>}
+          {tab==='subjects'&&<SubjectsTab subjects={subjects} profiles={profiles} students={students} fees={fees} reload={load}/>}
+          {tab==='packages'&&<PackagesTab packages={packages} subjects={subjects} reload={load}/>}
+          {tab==='schedule'&&<ScheduleTab schedules={schedules} subjects={subjects} students={students} profile={profile} perms={perms} reload={load}/>}
+          {tab==='fees'&&<FeesTab subjects={subjects} fees={fees} reload={load}/>}
+          {tab==='payments'&&<PaymentsTab payments={payments} students={students} subjects={subjects} fees={fees} perms={perms} reload={load}/>}
           {tab==='users'&&<UsersTab profiles={profiles} profile={profile} reload={load}/>}
         </div>
       </main>
@@ -1060,19 +1063,22 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
   async function handleImport(_rows:any[], rawText?:string){
     if(!rawText){setImportResult('Error: could not read file text');return}
     setBusy(true)
-    setImportResult('⏳ Uploading… please wait')
+    setImportResult('⏳ Uploading and extracting subjects… please wait')
     try{
       const r=await fetch('/api/import',{
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({type:'payments',csvText:rawText})
+        body:JSON.stringify({csvText:rawText})
       })
       const d=await r.json()
       if(!r.ok){setImportResult(`Error: ${d.error||'Server error'}`);setBusy(false);return}
       let msg=`✓ ${d.inserted} payments imported`
+      if(d.linked>0) msg+=` · ${d.linked} student-subject links created`
       if(d.failed>0) msg+=` · ${d.failed} failed`
-      if(d.skipped>0) msg+=` · ${d.skipped} skipped (₹0 amount)`
-      if(d.firstError) msg+=` — Error: "${d.firstError}"`
+      if(d.skipped>0) msg+=` · ${d.skipped} skipped (₹0)`
+      if(d.subjects_missing?.length) msg+=` · Subjects not found: ${d.subjects_missing.join(', ')}`
+      if(d.students_missing?.length) msg+=` · ${d.students_missing.length} students not matched (saved anyway)`
+      if(d.firstError) msg+=` — First error: "${d.firstError}"`
       setImportResult(msg)
       setImportOpen(false)
       reload()
@@ -1162,8 +1168,13 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
       </Modal>
 
       {/* Import payments */}
-      <Modal open={importOpen} onClose={()=>setImportOpen(false)} title="Import Payments from CSV" wide>
-        <div className="mb-4 p-3 bg-blue-50 border border-blue-100 rounded-lg text-xs text-blue-700">Payments will be matched to students by Student ID or Email. Unmatched payments are still imported but not linked to a student profile.</div>
+      <Modal open={importOpen} onClose={()=>setImportOpen(false)} title="Import Payments" wide>
+        <div className="mb-4 p-3 bg-blue-50 border border-blue-100 rounded-lg text-xs text-blue-700 space-y-1">
+          <div className="font-semibold text-blue-800">✓ Supports two formats:</div>
+          <div><strong>Invoice Items CSV</strong> (invoices_items-*.csv) — extracts subject from Item Name automatically, links students</div>
+          <div><strong>Payments CSV</strong> (payments-*.csv) — imports payment records with receipt/mode details</div>
+          <div className="text-blue-500 mt-1">Upload either file — the format is auto-detected.</div>
+        </div>
         <ImportPanel type="payments" onImport={handleImport}/>
       </Modal>
 
