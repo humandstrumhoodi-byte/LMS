@@ -150,5 +150,168 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(r)
   }
 
+  if (type === 'invoice') {
+    const { studentEmail, studentName, invoiceData } = body
+    if (!studentEmail) return NextResponse.json({ error: 'No email address for this student' }, { status: 400 })
+
+    const {
+      invoiceNo, subjectName, pkgName, monthLabel, rawAmount, discountAmt,
+      finalAmount, issueDate, dueDate, status, notes, upiId, academyName,
+      academyAddress, academyPhone, studentPhone, studentIdExt
+    } = invoiceData
+
+    const discountRow = discountAmt > 0 ? `
+      <tr>
+        <td style="padding:8px 0;color:#2563eb;font-style:italic;font-size:13px">Discount</td>
+        <td></td>
+        <td style="padding:8px 0;text-align:right;color:#2563eb;font-weight:500">-₹${Number(discountAmt).toLocaleString('en-IN')}</td>
+      </tr>` : ''
+
+    const html = `
+      <div style="font-family:sans-serif;max-width:560px;margin:0 auto">
+        <!-- Header -->
+        <div style="background:#3B1F8C;padding:20px 24px;border-radius:12px 12px 0 0;display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <div style="color:white;font-size:18px;font-weight:700">🎵 ${academyName}</div>
+            <div style="color:rgba(255,255,255,0.7);font-size:12px;margin-top:2px">${academyAddress} · ${academyPhone}</div>
+          </div>
+          <div style="text-align:right">
+            <div style="color:rgba(255,255,255,0.5);font-size:10px;text-transform:uppercase;letter-spacing:0.08em">Invoice</div>
+            <div style="color:white;font-size:15px;font-weight:700;font-family:monospace">${invoiceNo}</div>
+          </div>
+        </div>
+
+        <!-- Body -->
+        <div style="background:white;padding:20px 24px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px">
+          <!-- Billed to + dates -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
+            <div style="background:#f9fafb;border-radius:10px;padding:12px 14px">
+              <div style="font-size:10px;color:#9ca3af;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px">Billed To</div>
+              <div style="font-weight:600;font-size:14px;color:#111827">${studentName}</div>
+              ${studentEmail ? `<div style="font-size:12px;color:#6b7280;margin-top:2px">${studentEmail}</div>` : ''}
+              ${studentPhone ? `<div style="font-size:12px;color:#6b7280">${studentPhone}</div>` : ''}
+              ${studentIdExt ? `<div style="font-size:11px;color:#9ca3af;margin-top:4px">Student ID: #${studentIdExt}</div>` : ''}
+            </div>
+            <div style="background:#f9fafb;border-radius:10px;padding:12px 14px">
+              <div style="font-size:10px;color:#9ca3af;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px">Invoice Details</div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+                <span style="font-size:12px;color:#6b7280">Issue Date</span>
+                <span style="font-size:12px;font-weight:500">${issueDate}</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+                <span style="font-size:12px;color:#6b7280">Due Date</span>
+                <span style="font-size:12px;font-weight:500;color:${status==='paid'?'#059669':'#d97706'}">${dueDate}</span>
+              </div>
+              <div style="display:flex;justify-content:space-between">
+                <span style="font-size:12px;color:#6b7280">Status</span>
+                <span style="font-size:12px;font-weight:600;color:${status==='paid'?'#059669':'#d97706'};text-transform:capitalize">${status}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Line items -->
+          <table style="width:100%;border-collapse:collapse;margin-bottom:16px;font-size:13px">
+            <thead>
+              <tr style="border-bottom:2px solid #e5e7eb">
+                <th style="text-align:left;padding:8px 0;color:#6b7280;font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:0.05em">Description</th>
+                <th style="text-align:center;padding:8px 0;color:#6b7280;font-weight:500;font-size:11px;text-transform:uppercase">Period</th>
+                <th style="text-align:right;padding:8px 0;color:#6b7280;font-weight:500;font-size:11px;text-transform:uppercase">Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style="border-bottom:1px solid #f3f4f6">
+                <td style="padding:12px 0">
+                  <div style="font-weight:600;color:#111827">${subjectName}${pkgName ? ` — ${pkgName}` : ''}</div>
+                  ${notes ? `<div style="font-size:11px;color:#6b7280;margin-top:2px;font-style:italic">${notes}</div>` : ''}
+                </td>
+                <td style="padding:12px 0;text-align:center;color:#6b7280">${monthLabel}</td>
+                <td style="padding:12px 0;text-align:right;font-weight:500">₹${Number(rawAmount).toLocaleString('en-IN')}</td>
+              </tr>
+              ${discountRow}
+            </tbody>
+          </table>
+
+          <!-- Total box -->
+          <div style="background:#3B1F8C;border-radius:10px;padding:14px 18px;display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+            <span style="color:rgba(255,255,255,0.8);font-size:13px;font-weight:500">Total ${status==='paid'?'Paid':'Due'}</span>
+            <span style="color:white;font-size:22px;font-weight:700">₹${Number(finalAmount).toLocaleString('en-IN')}</span>
+          </div>
+
+          <!-- UPI payment -->
+          <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px 14px;margin-bottom:16px">
+            <div style="font-size:11px;color:#166534;font-weight:600;margin-bottom:4px">Pay via UPI</div>
+            <div style="font-size:15px;color:#15803d;font-weight:700;font-family:monospace">${upiId}</div>
+            <div style="font-size:11px;color:#16a34a;margin-top:2px">State Bank of India · Amount: ₹${Number(finalAmount).toLocaleString('en-IN')}</div>
+          </div>
+
+          <div style="font-size:11px;color:#9ca3af;text-align:center;border-top:1px solid #f3f4f6;padding-top:12px">
+            Thank you for learning with us! · ${academyName} · ${invoiceNo}
+          </div>
+        </div>
+      </div>`
+
+    const r = await sendEmail(studentEmail, `Invoice ${invoiceNo} — ${subjectName} (${monthLabel}) — ${academyName}`, html)
+    return NextResponse.json(r)
+  }
+
+  if (type === 'invoice') {
+    const { studentEmail, studentName, invoiceData } = body
+    if (!studentEmail) return NextResponse.json({ error: 'No email for this student' }, { status: 400 })
+    const { invoiceNo, subjectName, pkgName, monthLabel, rawAmount, discountAmt, finalAmount,
+      issueDate, dueDate, status, notes, upiId, academyName, academyAddress, academyPhone,
+      studentPhone, studentIdExt } = invoiceData
+
+    const html = `<div style="font-family:sans-serif;max-width:560px;margin:0 auto">
+      <div style="background:#3B1F8C;padding:20px 24px;border-radius:12px 12px 0 0;display:flex;justify-content:space-between;align-items:center">
+        <div><div style="color:white;font-size:18px;font-weight:700">🎵 ${academyName}</div><div style="color:rgba(255,255,255,0.7);font-size:12px">${academyAddress} · ${academyPhone}</div></div>
+        <div style="text-align:right"><div style="color:rgba(255,255,255,0.5);font-size:10px;text-transform:uppercase">Invoice</div><div style="color:white;font-size:15px;font-weight:700;font-family:monospace">${invoiceNo}</div></div>
+      </div>
+      <div style="background:white;padding:20px 24px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
+          <div style="background:#f9fafb;border-radius:10px;padding:12px 14px">
+            <div style="font-size:10px;color:#9ca3af;text-transform:uppercase;margin-bottom:6px">Billed To</div>
+            <div style="font-weight:600;font-size:14px;color:#111827">${studentName}</div>
+            ${studentEmail ? `<div style="font-size:12px;color:#6b7280">${studentEmail}</div>` : ''}
+            ${studentPhone ? `<div style="font-size:12px;color:#6b7280">${studentPhone}</div>` : ''}
+            ${studentIdExt ? `<div style="font-size:11px;color:#9ca3af">Student ID: #${studentIdExt}</div>` : ''}
+          </div>
+          <div style="background:#f9fafb;border-radius:10px;padding:12px 14px">
+            <div style="font-size:10px;color:#9ca3af;text-transform:uppercase;margin-bottom:6px">Invoice Details</div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span style="font-size:12px;color:#6b7280">Issue Date</span><span style="font-size:12px;font-weight:500">${issueDate}</span></div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span style="font-size:12px;color:#6b7280">Due Date</span><span style="font-size:12px;font-weight:500;color:${status==='paid'?'#059669':'#d97706'}">${dueDate}</span></div>
+            <div style="display:flex;justify-content:space-between"><span style="font-size:12px;color:#6b7280">Status</span><span style="font-size:12px;font-weight:600;color:${status==='paid'?'#059669':'#d97706'};text-transform:capitalize">${status}</span></div>
+          </div>
+        </div>
+        <table style="width:100%;border-collapse:collapse;margin-bottom:16px;font-size:13px">
+          <thead><tr style="border-bottom:2px solid #e5e7eb">
+            <th style="text-align:left;padding:8px 0;color:#6b7280;font-weight:500;font-size:11px;text-transform:uppercase">Description</th>
+            <th style="text-align:center;padding:8px 0;color:#6b7280;font-weight:500;font-size:11px;text-transform:uppercase">Period</th>
+            <th style="text-align:right;padding:8px 0;color:#6b7280;font-weight:500;font-size:11px;text-transform:uppercase">Amount</th>
+          </tr></thead>
+          <tbody>
+            <tr style="border-bottom:1px solid #f3f4f6">
+              <td style="padding:12px 0"><div style="font-weight:600;color:#111827">${subjectName}${pkgName ? ` — ${pkgName}` : ''}</div>${notes ? `<div style="font-size:11px;color:#6b7280;font-style:italic">${notes}</div>` : ''}</td>
+              <td style="padding:12px 0;text-align:center;color:#6b7280">${monthLabel}</td>
+              <td style="padding:12px 0;text-align:right;font-weight:500">₹${Number(rawAmount).toLocaleString('en-IN')}</td>
+            </tr>
+            ${Number(discountAmt) > 0 ? `<tr><td style="padding:8px 0;color:#2563eb;font-style:italic">Discount</td><td></td><td style="padding:8px 0;text-align:right;color:#2563eb;font-weight:500">-₹${Number(discountAmt).toLocaleString('en-IN')}</td></tr>` : ''}
+          </tbody>
+        </table>
+        <div style="background:#3B1F8C;border-radius:10px;padding:14px 18px;display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <span style="color:rgba(255,255,255,0.8);font-size:13px;font-weight:500">Total ${status==='paid'?'Paid':'Due'}</span>
+          <span style="color:white;font-size:22px;font-weight:700">₹${Number(finalAmount).toLocaleString('en-IN')}</span>
+        </div>
+        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px 14px;margin-bottom:16px">
+          <div style="font-size:11px;color:#166534;font-weight:600;margin-bottom:4px">Pay via UPI</div>
+          <div style="font-size:15px;color:#15803d;font-weight:700;font-family:monospace">${upiId}</div>
+          <div style="font-size:11px;color:#16a34a">State Bank of India · Amount: ₹${Number(finalAmount).toLocaleString('en-IN')}</div>
+        </div>
+        <div style="font-size:11px;color:#9ca3af;text-align:center;border-top:1px solid #f3f4f6;padding-top:12px">Thank you for learning with us! · ${academyName}</div>
+      </div></div>`
+
+    const r = await sendEmail(studentEmail, `Invoice ${invoiceNo} — ${subjectName} (${monthLabel})`, html)
+    return NextResponse.json(r)
+  }
+
   return NextResponse.json({ error: 'Unknown type' }, { status: 400 })
 }

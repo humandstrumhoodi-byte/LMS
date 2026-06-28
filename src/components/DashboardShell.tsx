@@ -332,7 +332,7 @@ function DashboardShellInner({profile}:{profile:Profile}){
       <main className="flex-1 overflow-y-auto bg-gray-50">
         <div className="max-w-6xl mx-auto px-6 py-6">
           {tab==='home'&&<HomeTab profile={profile} perms={perms} students={students} profiles={profiles} payments={payments} schedules={schedules} subjects={subjects} leads={leads} setTab={setTab}/>}
-          {tab==='students'&&<StudentsTab students={students} subjects={subjects} reload={load}/>}
+          {tab==='students'&&<StudentsTab students={students} subjects={subjects} packages={packages} fees={fees} reload={load}/>}
           {tab==='leads'&&<LeadsTab leads={leads} subjects={subjects} reload={load}/>}
           {tab==='teachers'&&<TeachersTab profiles={profiles} subjects={subjects} reload={load}/>}
           {tab==='subjects'&&<SubjectsTab subjects={subjects} profiles={profiles} students={students} fees={fees} subjectTeachers={subjectTeachers} reload={load}/>}
@@ -383,7 +383,7 @@ function HomeTab({profile,perms,students,profiles,payments,schedules,subjects,le
 }
 
 // ══════════════════════════════════════════════════════════════ STUDENTS
-function StudentsTab({students,subjects,reload}:any){
+function StudentsTab({students,subjects,packages,fees,reload}:any){
   const supabase=sb()
   const [q,setQ]=useState('')
   const [open,setOpen]=useState(false)
@@ -482,7 +482,10 @@ function StudentsTab({students,subjects,reload}:any){
         student={detailStudent}
         payments={studentPayments}
         subjects={subjects}
+        packages={packages}
+        fees={fees}
         onClose={()=>setDetailStudent(null)}
+        reload={reload}
       />}
 
       <Modal open={open} onClose={()=>setOpen(false)} title={editing?'Edit Student':'Add Student'}>
@@ -1752,8 +1755,9 @@ export default function DashboardShell({profile}:{profile:Profile}){
 // ══════════════════════════════════════════════════════════════
 // STUDENT DETAIL MODAL — month-by-month payment ledger
 // ══════════════════════════════════════════════════════════════
-function StudentDetailModal({ student, payments, subjects, onClose }: any) {
-  const [activeTab, setActiveTab] = useState<'overview'|'monthly'|'invoices'>('overview')
+function StudentDetailModal({ student, payments, subjects, packages, fees, onClose, reload }: any) {
+  const [activeTab, setActiveTab] = useState<'overview'|'monthly'|'invoices'|'raise_invoice'>('overview')
+  const supabase = sb()
 
   const totalPaid    = payments.filter((p:any) => p.status === 'paid').reduce((a:number,p:any) => a + p.amount, 0)
   const totalPending = payments.filter((p:any) => p.status === 'pending' || p.status === 'overdue').reduce((a:number,p:any) => a + p.amount, 0)
@@ -1825,9 +1829,10 @@ function StudentDetailModal({ student, payments, subjects, onClose }: any) {
         {/* Tabs */}
         <div className="flex border-b border-gray-100 px-2 flex-shrink-0">
           {([
-            { id:'overview',  label:'Overview' },
-            { id:'monthly',   label:`Monthly (${months.length} months)` },
-            { id:'invoices',  label:`All Transactions (${payments.length})` },
+            { id:'overview',       label:'Overview' },
+            { id:'monthly',        label:`Monthly (${months.length} months)` },
+            { id:'invoices',       label:`All Transactions (${payments.length})` },
+            { id:'raise_invoice',  label:'🧾 Raise Invoice' },
           ] as const).map(t => (
             <button key={t.id} onClick={()=>setActiveTab(t.id)}
               className={clsx('px-4 py-2.5 text-sm font-medium border-b-2 transition-colors',
@@ -2048,8 +2053,463 @@ function StudentDetailModal({ student, payments, subjects, onClose }: any) {
               }
             </div>
           )}
+
+          {/* ── RAISE INVOICE TAB ── */}
+          {activeTab === 'raise_invoice' && (
+            <RaiseInvoicePanel
+              student={student}
+              subjects={subjects}
+              packages={packages}
+              fees={fees}
+              supabase={supabase}
+              reload={reload}
+              onSuccess={()=>setActiveTab('invoices')}
+            />
+          )}
         </div>
       </div>
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════
+// RAISE INVOICE PANEL
+// ══════════════════════════════════════════════════════════════
+const MONTHS_OPTIONS = Array.from({length:12},(_,i)=>{const d=new Date();d.setMonth(d.getMonth()-2+i);return d.toLocaleString('en-IN',{month:'long',year:'numeric'})})
+const UPI_ID = 'truetoneacademy@sbi'
+const ACADEMY_NAME = 'True Tone Music Academy'
+const ACADEMY_ADDRESS = 'Hoodi, Bengaluru'
+const ACADEMY_PHONE = '+91 97312 70069'
+
+function RaiseInvoicePanel({ student, subjects, packages, fees, supabase, reload, onSuccess }: any) {
+  const enrolledSubs = subjects.filter((s:any) =>
+    student.student_subjects?.some((ss:any) => ss.subject_id === s.id)
+  )
+  const allSubs = subjects
+
+  const [form, setForm] = useState({
+    subject_id: enrolledSubs[0]?.id || '',
+    package_id: '',
+    grade_level: 'Beginner–Grade 2',
+    month_label: MONTHS_OPTIONS[2],
+    amount: '',
+    discount: '',
+    notes: '',
+    mode_of_payment: 'UPI',
+    due_date: new Date(Date.now()+7*86400000).toISOString().slice(0,10),
+    status: 'pending' as 'pending'|'paid',
+  })
+  const [busy, setBusy] = useState(false)
+  const [showPreview, setShowPreview] = useState(false)
+  const [invoiceNo, setInvoiceNo] = useState('')
+
+  // Get packages for selected subject + grade
+  const subjectPackages = packages.filter((p:any) =>
+    p.subject_id === form.subject_id && (p.grade_level === form.grade_level || p.grade_level === 'All Levels')
+  )
+
+  // When subject changes, reset package and auto-fill from fee_structures
+  useEffect(() => {
+    const fee = fees.find((f:any) => f.subject_id === form.subject_id)
+    setForm(f => ({ ...f, package_id: '', amount: fee ? String(fee.amount) : f.amount }))
+  }, [form.subject_id])
+
+  // When package changes, auto-fill amount
+  useEffect(() => {
+    if (!form.package_id) return
+    const pkg = packages.find((p:any) => p.id === form.package_id)
+    if (pkg) setForm(f => ({ ...f, amount: String(pkg.price) }))
+  }, [form.package_id])
+
+  const selectedSub = subjects.find((s:any) => s.id === form.subject_id)
+  const selectedPkg = packages.find((p:any) => p.id === form.package_id)
+  const rawAmount = parseFloat(form.amount) || 0
+  const discountAmt = parseFloat(form.discount) || 0
+  const finalAmount = Math.max(0, rawAmount - discountAmt)
+
+  // Generate invoice number
+  useEffect(() => {
+    const ts = Date.now().toString().slice(-6)
+    setInvoiceNo(`INV-${ts}`)
+  }, [])
+
+  async function saveInvoice() {
+    if (!form.subject_id || !form.amount) return
+    setBusy(true)
+    const { error } = await supabase.from('payments').insert({
+      student_id:      student.id,
+      subject_id:      form.subject_id || null,
+      amount:          finalAmount,
+      discount:        discountAmt || null,
+      payment_date:    form.status === 'paid' ? new Date().toISOString().slice(0,10) : null,
+      status:          form.status,
+      month_label:     form.month_label,
+      invoice_number:  invoiceNo.replace('INV-',''),
+      mode_of_payment: form.mode_of_payment,
+      description:     selectedPkg ? selectedPkg.name : (selectedSub?.name || ''),
+      notes:           form.notes || null,
+      student_name:    student.full_name,
+      student_email:   student.email,
+      student_phone:   student.phone,
+      student_id_ext:  student.student_id_ext,
+      recorded_by:     'Academy',
+    })
+    setBusy(false)
+    if (!error) { reload(); onSuccess() }
+    else alert('Error: ' + error.message)
+  }
+
+  if (showPreview) return (
+    <InvoicePreview
+      student={student}
+      subject={selectedSub}
+      pkg={selectedPkg}
+      form={form}
+      invoiceNo={invoiceNo}
+      rawAmount={rawAmount}
+      discountAmt={discountAmt}
+      finalAmount={finalAmount}
+      onBack={()=>setShowPreview(false)}
+      onSave={saveInvoice}
+      busy={busy}
+    />
+  )
+
+  return (
+    <div className="space-y-5">
+      <div className="bg-brand-50 border border-brand-100 rounded-xl p-3 text-xs text-brand-700">
+        Raising invoice for <strong>{student.full_name}</strong> · ID #{student.student_id_ext || student.id.slice(0,6)}
+      </div>
+
+      {/* Subject */}
+      <div>
+        <label className="label">Subject *</label>
+        <div className="grid grid-cols-2 gap-2">
+          {allSubs.map((s:any) => (
+            <button key={s.id} type="button"
+              onClick={() => setForm(f => ({ ...f, subject_id: s.id, package_id: '' }))}
+              className={clsx('px-3 py-2 rounded-xl border text-sm font-medium text-left transition-all flex items-center gap-2',
+                form.subject_id === s.id ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'
+              )}>
+              <span className={clsx('badge text-xs', colorBadge[s.color]||colorBadge.violet)}>{s.code}</span>
+              {s.name}
+              {enrolledSubs.some((es:any) => es.id === s.id) && <span className="ml-auto text-xs text-emerald-600">✓ enrolled</span>}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Grade Level */}
+      <div>
+        <label className="label">Grade Level</label>
+        <div className="flex gap-2 flex-wrap">
+          {['Beginner–Grade 2','Grade 3–5','Grade 6–8'].map(g => (
+            <button key={g} type="button"
+              onClick={() => setForm(f => ({ ...f, grade_level: g, package_id: '' }))}
+              className={clsx('px-3 py-1.5 rounded-lg border text-sm font-medium transition-all',
+                form.grade_level === g ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-gray-200 text-gray-500 hover:border-gray-300'
+              )}>
+              {g}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Package selection */}
+      {subjectPackages.length > 0 && (
+        <div>
+          <label className="label">Package (optional — auto-fills price)</label>
+          <div className="grid grid-cols-2 gap-2">
+            {subjectPackages.map((p:any) => (
+              <button key={p.id} type="button"
+                onClick={() => setForm(f => ({ ...f, package_id: p.id }))}
+                className={clsx('p-3 rounded-xl border text-left transition-all',
+                  form.package_id === p.id ? 'border-brand-500 bg-brand-50' : 'border-gray-200 bg-white hover:border-gray-300'
+                )}>
+                <div className="text-sm font-semibold text-gray-900">{fmt(p.price)}<span className="text-xs text-gray-400 font-normal">/mo</span></div>
+                <div className="text-xs text-gray-500 mt-0.5">{p.name} · {p.duration_min}min</div>
+                <div className="text-xs text-gray-400">{fmt(Math.round(p.price/p.classes_pm))}/class</div>
+              </button>
+            ))}
+            <button type="button"
+              onClick={() => setForm(f => ({ ...f, package_id: '' }))}
+              className={clsx('p-3 rounded-xl border text-left transition-all',
+                !form.package_id ? 'border-brand-500 bg-brand-50' : 'border-gray-200 bg-white hover:border-gray-300'
+              )}>
+              <div className="text-sm font-semibold text-gray-900">Custom</div>
+              <div className="text-xs text-gray-500">Enter amount manually</div>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Amount + Discount */}
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="label">Amount (₹) *</label>
+          <input className="input text-lg font-semibold" type="number" value={form.amount}
+            onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} placeholder="e.g. 2200"/>
+        </div>
+        <div>
+          <label className="label">Discount (₹)</label>
+          <input className="input" type="number" value={form.discount}
+            onChange={e => setForm(f => ({ ...f, discount: e.target.value }))} placeholder="0"/>
+        </div>
+      </div>
+
+      {/* Final amount display */}
+      {(rawAmount > 0) && (
+        <div className={clsx('flex items-center justify-between px-4 py-3 rounded-xl',
+          discountAmt > 0 ? 'bg-blue-50 border border-blue-100' : 'bg-emerald-50 border border-emerald-100'
+        )}>
+          <div className="text-sm text-gray-600">
+            {discountAmt > 0 && <span className="text-blue-600">{fmt(rawAmount)} - {fmt(discountAmt)} disc = </span>}
+            <strong className="text-gray-900">Final Amount:</strong>
+          </div>
+          <div className="text-xl font-bold text-emerald-700">{fmt(finalAmount)}</div>
+        </div>
+      )}
+
+      {/* Month + Mode */}
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="label">Month</label>
+          <select className="input" value={form.month_label} onChange={e => setForm(f => ({ ...f, month_label: e.target.value }))}>
+            {MONTHS_OPTIONS.map(m => <option key={m}>{m}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="label">Payment Mode</label>
+          <select className="input" value={form.mode_of_payment} onChange={e => setForm(f => ({ ...f, mode_of_payment: e.target.value }))}>
+            {['UPI','Cash','Credit / Debit Card','Payment gateway','Bank Transfer','Cheque'].map(m => <option key={m}>{m}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {/* Status + Due Date */}
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="label">Status</label>
+          <div className="flex gap-2">
+            {(['pending','paid'] as const).map(s => (
+              <button key={s} type="button"
+                onClick={() => setForm(f => ({ ...f, status: s }))}
+                className={clsx('flex-1 py-2 rounded-lg border text-sm font-medium capitalize transition-all',
+                  form.status === s
+                    ? s === 'paid' ? 'border-emerald-500 bg-emerald-500 text-white' : 'border-amber-400 bg-amber-400 text-white'
+                    : 'border-gray-200 text-gray-500 hover:border-gray-300'
+                )}>
+                {s}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <label className="label">Due Date</label>
+          <input className="input" type="date" value={form.due_date} onChange={e => setForm(f => ({ ...f, due_date: e.target.value }))}/>
+        </div>
+      </div>
+
+      {/* Notes */}
+      <div>
+        <label className="label">Notes (optional)</label>
+        <input className="input" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="e.g. 3 months advance payment"/>
+      </div>
+
+      {/* Actions */}
+      <div className="flex gap-2 pt-2">
+        <button onClick={() => setShowPreview(true)} disabled={!form.subject_id || !form.amount} className="btn flex-1 justify-center">
+          <Eye className="w-4 h-4"/> Preview Invoice
+        </button>
+        <button onClick={saveInvoice} disabled={busy || !form.subject_id || !form.amount} className="btn-primary flex-1 justify-center">
+          {busy ? <Loader2 className="w-4 h-4 animate-spin"/> : <FileText className="w-4 h-4"/>}
+          Save & Record
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════
+// INVOICE PREVIEW — printable with QR code
+// ══════════════════════════════════════════════════════════════
+function InvoicePreview({ student, subject, pkg, form, invoiceNo, rawAmount, discountAmt, finalAmount, onBack, onSave, busy }: any) {
+  const [emailSending, setEmailSending] = useState(false)
+  const [emailResult, setEmailResult] = useState('')
+
+  async function sendInvoiceEmail() {
+    if (!student.email) { setEmailResult('❌ No email address on file for this student'); return }
+    setEmailSending(true); setEmailResult('')
+    const issueDate = new Date().toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'})
+    const dueDate = new Date(form.due_date).toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'})
+    const r = await fetch('/api/email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'invoice',
+        studentEmail: student.email,
+        studentName: student.full_name,
+        invoiceData: {
+          invoiceNo, subjectName: subject?.name || 'Tuition',
+          pkgName: pkg?.name || null,
+          monthLabel: form.month_label, rawAmount, discountAmt, finalAmount,
+          issueDate, dueDate, status: form.status,
+          notes: form.notes || null,
+          upiId: UPI_ID, academyName: ACADEMY_NAME,
+          academyAddress: ACADEMY_ADDRESS, academyPhone: ACADEMY_PHONE,
+          studentPhone: student.phone, studentIdExt: student.student_id_ext,
+        }
+      })
+    })
+    const d = await r.json()
+    setEmailSending(false)
+    if (d.ok) setEmailResult(d.dev ? '✓ Email queued (add RESEND_API_KEY to send for real)' : `✓ Invoice emailed to ${student.email}`)
+    else setEmailResult(`❌ ${d.error || 'Failed to send'}`)
+  }
+
+  const issueDate = new Date().toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'})
+  const dueDate = new Date(form.due_date).toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'})
+
+  // UPI QR code URL via Google Charts API (free, no key needed)
+  const upiString = `upi://pay?pa=${UPI_ID}&pn=${encodeURIComponent(ACADEMY_NAME)}&am=${finalAmount}&cu=INR&tn=${encodeURIComponent(invoiceNo)}`
+  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(upiString)}`
+
+  return (
+    <div>
+      {/* Print/Save/Email actions */}
+      <div className="flex gap-2 mb-3 flex-wrap">
+        <button onClick={onBack} className="btn"><X className="w-4 h-4"/> Back</button>
+        <button onClick={() => window.print()} className="btn"><Download className="w-4 h-4"/> Print / PDF</button>
+        <button onClick={sendInvoiceEmail} disabled={emailSending || !student.email} className="btn text-brand-600 border-brand-200 hover:bg-brand-50">
+          {emailSending ? <Loader2 className="w-4 h-4 animate-spin"/> : <Mail className="w-4 h-4"/>}
+          {emailSending ? 'Sending…' : student.email ? `Email to ${student.email}` : 'No email on file'}
+        </button>
+        <button onClick={onSave} disabled={busy} className="btn-primary ml-auto">
+          {busy ? <Loader2 className="w-4 h-4 animate-spin"/> : <CheckCircle className="w-4 h-4"/>}
+          Confirm & Save
+        </button>
+      </div>
+      {emailResult && (
+        <div className={clsx('mb-3 px-3 py-2 rounded-lg text-sm border', emailResult.startsWith('✓') ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : 'bg-red-50 text-red-600 border-red-100')}>
+          {emailResult}
+        </div>
+      )}
+
+      {/* Invoice document */}
+      <div id="invoice-print" className="border border-gray-200 rounded-2xl overflow-hidden bg-white" style={{fontFamily:'sans-serif'}}>
+        {/* Header band */}
+        <div style={{background:'#3B1F8C',padding:'20px 24px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <div>
+            <div style={{color:'white',fontSize:'18px',fontWeight:700,letterSpacing:'-0.3px'}}>🎵 {ACADEMY_NAME}</div>
+            <div style={{color:'rgba(255,255,255,0.7)',fontSize:'12px',marginTop:'2px'}}>{ACADEMY_ADDRESS} · {ACADEMY_PHONE}</div>
+          </div>
+          <div style={{textAlign:'right'}}>
+            <div style={{color:'rgba(255,255,255,0.5)',fontSize:'11px',textTransform:'uppercase',letterSpacing:'0.08em'}}>Invoice</div>
+            <div style={{color:'white',fontSize:'16px',fontWeight:700,fontFamily:'monospace'}}>{invoiceNo}</div>
+          </div>
+        </div>
+
+        <div style={{padding:'20px 24px'}}>
+          {/* Billed to + dates row */}
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'16px',marginBottom:'20px'}}>
+            <div style={{background:'#f9fafb',borderRadius:'10px',padding:'12px 14px'}}>
+              <div style={{fontSize:'10px',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:'6px'}}>Billed To</div>
+              <div style={{fontWeight:600,fontSize:'14px',color:'#111827'}}>{student.full_name}</div>
+              {student.email && <div style={{fontSize:'12px',color:'#6b7280',marginTop:'2px'}}>{student.email}</div>}
+              {student.phone && <div style={{fontSize:'12px',color:'#6b7280'}}>{student.phone}</div>}
+              {student.student_id_ext && <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'4px'}}>Student ID: #{student.student_id_ext}</div>}
+            </div>
+            <div style={{background:'#f9fafb',borderRadius:'10px',padding:'12px 14px'}}>
+              <div style={{fontSize:'10px',color:'#9ca3af',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:'6px'}}>Invoice Details</div>
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:'4px'}}>
+                <span style={{fontSize:'12px',color:'#6b7280'}}>Issue Date</span>
+                <span style={{fontSize:'12px',fontWeight:500}}>{issueDate}</span>
+              </div>
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:'4px'}}>
+                <span style={{fontSize:'12px',color:'#6b7280'}}>Due Date</span>
+                <span style={{fontSize:'12px',fontWeight:500,color: form.status==='paid'?'#059669':'#d97706'}}>{dueDate}</span>
+              </div>
+              <div style={{display:'flex',justifyContent:'space-between'}}>
+                <span style={{fontSize:'12px',color:'#6b7280'}}>Status</span>
+                <span style={{fontSize:'12px',fontWeight:600,color:form.status==='paid'?'#059669':'#d97706',textTransform:'capitalize'}}>{form.status}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Line items table */}
+          <table style={{width:'100%',borderCollapse:'collapse',marginBottom:'16px',fontSize:'13px'}}>
+            <thead>
+              <tr style={{borderBottom:'2px solid #e5e7eb'}}>
+                <th style={{textAlign:'left',padding:'8px 0',color:'#6b7280',fontWeight:500,fontSize:'11px',textTransform:'uppercase',letterSpacing:'0.05em'}}>Description</th>
+                <th style={{textAlign:'center',padding:'8px 0',color:'#6b7280',fontWeight:500,fontSize:'11px',textTransform:'uppercase'}}>Period</th>
+                <th style={{textAlign:'right',padding:'8px 0',color:'#6b7280',fontWeight:500,fontSize:'11px',textTransform:'uppercase'}}>Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style={{borderBottom:'1px solid #f3f4f6'}}>
+                <td style={{padding:'12px 0'}}>
+                  <div style={{fontWeight:600,color:'#111827'}}>{subject?.name || 'Tuition'}{pkg ? ` — ${pkg.name}` : ''}</div>
+                  {pkg && <div style={{fontSize:'11px',color:'#9ca3af',marginTop:'2px'}}>{pkg.classes_pm} classes/month · {pkg.duration_min} min each</div>}
+                  {form.notes && <div style={{fontSize:'11px',color:'#6b7280',marginTop:'2px',fontStyle:'italic'}}>{form.notes}</div>}
+                </td>
+                <td style={{padding:'12px 0',textAlign:'center',color:'#6b7280'}}>{form.month_label}</td>
+                <td style={{padding:'12px 0',textAlign:'right',fontWeight:500}}>₹{rawAmount.toLocaleString('en-IN')}</td>
+              </tr>
+              {discountAmt > 0 && (
+                <tr style={{borderBottom:'1px solid #f3f4f6'}}>
+                  <td style={{padding:'8px 0',color:'#2563eb',fontStyle:'italic',fontSize:'12px'}}>Discount</td>
+                  <td></td>
+                  <td style={{padding:'8px 0',textAlign:'right',color:'#2563eb',fontWeight:500}}>-₹{discountAmt.toLocaleString('en-IN')}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+
+          {/* Total + QR */}
+          <div style={{display:'grid',gridTemplateColumns:'1fr auto',gap:'16px',alignItems:'end'}}>
+            {/* Total box */}
+            <div>
+              <div style={{background:'#3B1F8C',borderRadius:'10px',padding:'14px 18px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <span style={{color:'rgba(255,255,255,0.8)',fontSize:'13px',fontWeight:500}}>Total {form.status==='paid'?'Paid':'Due'}</span>
+                <span style={{color:'white',fontSize:'22px',fontWeight:700}}>₹{finalAmount.toLocaleString('en-IN')}</span>
+              </div>
+              <div style={{marginTop:'10px',padding:'10px 14px',background:'#f0fdf4',borderRadius:'8px',border:'1px solid #bbf7d0'}}>
+                <div style={{fontSize:'11px',color:'#166534',fontWeight:600,marginBottom:'4px'}}>Payment via UPI</div>
+                <div style={{fontSize:'13px',color:'#15803d',fontWeight:700,fontFamily:'monospace'}}>{UPI_ID}</div>
+                <div style={{fontSize:'11px',color:'#16a34a',marginTop:'2px'}}>State Bank of India</div>
+              </div>
+            </div>
+            {/* QR Code */}
+            <div style={{textAlign:'center'}}>
+              <img
+                src={qrUrl}
+                alt="UPI QR Code"
+                style={{width:'110px',height:'110px',borderRadius:'8px',border:'1px solid #e5e7eb'}}
+                onError={e => { (e.target as HTMLImageElement).style.display='none' }}
+              />
+              <div style={{fontSize:'10px',color:'#9ca3af',marginTop:'4px'}}>Scan to pay</div>
+              <div style={{fontSize:'10px',color:'#6b7280',fontWeight:600}}>{UPI_ID}</div>
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div style={{marginTop:'16px',paddingTop:'12px',borderTop:'1px solid #f3f4f6',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <div style={{fontSize:'11px',color:'#9ca3af'}}>
+              Thank you for learning with us! · {ACADEMY_NAME}
+            </div>
+            <div style={{fontSize:'11px',color:'#9ca3af',fontFamily:'monospace'}}>{invoiceNo}</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Print styles injected */}
+      <style>{`
+        @media print {
+          body * { visibility: hidden !important; }
+          #invoice-print, #invoice-print * { visibility: visible !important; }
+          #invoice-print { position: fixed; top: 0; left: 0; width: 100%; border: none !important; border-radius: 0 !important; }
+        }
+      `}</style>
     </div>
   )
 }
