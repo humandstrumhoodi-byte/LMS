@@ -2778,30 +2778,13 @@ function ReportsTab({ students, subjects, payments, profiles, attendance }: any)
           )}
 
           {activeReport === 'payment_monthly' && (
-            <div>
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="font-semibold text-gray-900">Monthly Collection (Last 12 Months)</h2>
-                <button onClick={() => exportCSV(last12Months.map(m => ({ Month: m, Amount: monthlyCollection[m]||0 })), 'monthly_collection.csv')} className="btn btn-sm"><Download className="w-3 h-3"/> Export</button>
-              </div>
-              <MonthChart data={monthlyCollection} months={last12Months} />
-              <div className="mt-4 overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead><tr><th className="th">Month</th><th className="th text-right">Collected</th><th className="th text-right">Transactions</th></tr></thead>
-                  <tbody>
-                    {last12Months.slice().reverse().map(m => {
-                      const txns = paidPayments.filter((p: any) => p.payment_date?.startsWith(m)).length
-                      return (
-                        <tr key={m} className="hover:bg-gray-50/50">
-                          <td className="td">{new Date(m+'-01').toLocaleString('en-IN',{month:'long',year:'numeric'})}</td>
-                          <td className="td text-right font-semibold">{fmt(monthlyCollection[m]||0)}</td>
-                          <td className="td text-right text-gray-400">{txns}</td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+            <MonthlyBreakdownReport
+              paidPayments={paidPayments}
+              last12Months={last12Months}
+              monthlyCollection={monthlyCollection}
+              exportCSV={exportCSV}
+              MonthChart={MonthChart}
+            />
           )}
 
           {activeReport === 'payment_ytd' && (
@@ -2906,6 +2889,197 @@ function ReportsTab({ students, subjects, payments, profiles, attendance }: any)
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════
+// MONTHLY BREAKDOWN REPORT — click month to see student list
+// ══════════════════════════════════════════════════════════════
+function MonthlyBreakdownReport({ paidPayments, last12Months, monthlyCollection, exportCSV, MonthChart }: any) {
+  const [selectedMonth, setSelectedMonth] = useState<string | null>(null)
+
+  const monthStudents = selectedMonth
+    ? paidPayments.filter((p: any) => p.payment_date?.startsWith(selectedMonth))
+    : []
+
+  // Group by student name for the selected month
+  const byStudent: Record<string, { name: string; email: string; payments: any[] }> = {}
+  monthStudents.forEach((p: any) => {
+    const name = p.students?.full_name || p.student_name || 'Unknown'
+    if (!byStudent[name]) byStudent[name] = { name, email: p.students?.email || p.student_email || '', payments: [] }
+    byStudent[name].payments.push(p)
+  })
+  const studentList = Object.values(byStudent).sort((a, b) => a.name.localeCompare(b.name))
+  const monthTotal = monthStudents.reduce((a: number, p: any) => a + p.amount, 0)
+
+  function exportMonth() {
+    if (!selectedMonth) return
+    const rows = monthStudents.map((p: any) => ({
+      Student: p.students?.full_name || p.student_name || '',
+      Email: p.students?.email || p.student_email || '',
+      Subject: p.subjects?.name || '',
+      Amount: p.amount,
+      Discount: p.discount || 0,
+      Mode: p.mode_of_payment || '',
+      Invoice: p.invoice_number || '',
+      Date: p.payment_date || '',
+    }))
+    exportCSV(rows, `payments_${selectedMonth}.csv`)
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="font-semibold text-gray-900">Monthly Collection — click a month to see students</h2>
+        <div className="flex gap-2">
+          {selectedMonth && (
+            <button onClick={exportMonth} className="btn btn-sm"><Download className="w-3 h-3"/> Export {selectedMonth}</button>
+          )}
+          <button onClick={() => exportCSV(last12Months.map((m: string) => ({ Month: m, Amount: monthlyCollection[m]||0 })), 'monthly_collection.csv')} className="btn btn-sm"><Download className="w-3 h-3"/> Export All</button>
+        </div>
+      </div>
+
+      {/* Bar chart — clickable bars */}
+      <div className="mb-5">
+        <div className="flex items-end gap-1.5 h-40 mb-2">
+          {last12Months.map((m: string, i: number) => {
+            const val = monthlyCollection[m] || 0
+            const max = Math.max(...last12Months.map((x: string) => monthlyCollection[x] || 0), 1)
+            const pct = (val / max) * 100
+            const label = new Date(m + '-01').toLocaleString('en-IN', { month: 'short' })
+            const isSelected = selectedMonth === m
+            const BAR_COLORS = ['#3B1F8C','#7B5FC4','#A98CE8','#4A2FA0','#6B55C8','#8F7ED5','#C8B5F5','#D8D1F0']
+            return (
+              <div key={m} className="flex-1 flex flex-col items-center gap-1 cursor-pointer group" onClick={() => setSelectedMonth(isSelected ? null : m)}>
+                <div className="w-full relative flex items-end" style={{ height: '120px' }}>
+                  <div
+                    className="w-full rounded-t-md transition-all duration-200"
+                    style={{
+                      height: `${pct}%`, minHeight: val > 0 ? 4 : 0,
+                      background: isSelected ? '#F0C040' : BAR_COLORS[i % BAR_COLORS.length],
+                      boxShadow: isSelected ? '0 0 0 2px #F0C040, 0 0 0 4px rgba(240,192,64,0.3)' : undefined,
+                    }}
+                    title={`${label}: ${val.toLocaleString('en-IN', {style:'currency',currency:'INR'})}`}
+                  />
+                </div>
+                <div className={clsx('text-xs', isSelected ? 'text-amber-600 font-semibold' : 'text-gray-400 group-hover:text-gray-600')}>{label}</div>
+              </div>
+            )
+          })}
+        </div>
+        <div className="text-xs text-gray-400 text-center">Click a bar to drill down into student payments</div>
+      </div>
+
+      {/* Month summary table with clickable rows */}
+      {!selectedMonth && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr>
+              <th className="th">Month</th>
+              <th className="th text-right">Collected</th>
+              <th className="th text-right">Transactions</th>
+              <th className="th text-right">Students</th>
+              <th className="th w-24"></th>
+            </tr></thead>
+            <tbody>
+              {last12Months.slice().reverse().map((m: string) => {
+                const monthPmts = paidPayments.filter((p: any) => p.payment_date?.startsWith(m))
+                const uniqueStudents = new Set(monthPmts.map((p: any) => p.students?.full_name || p.student_name)).size
+                return (
+                  <tr key={m} className="hover:bg-brand-50/50 cursor-pointer" onClick={() => setSelectedMonth(m)}>
+                    <td className="td font-medium">{new Date(m+'-01').toLocaleString('en-IN',{month:'long',year:'numeric'})}</td>
+                    <td className="td text-right font-semibold text-emerald-700">{fmt(monthlyCollection[m]||0)}</td>
+                    <td className="td text-right text-gray-400">{monthPmts.length}</td>
+                    <td className="td text-right text-gray-400">{uniqueStudents}</td>
+                    <td className="td text-right"><span className="text-xs text-brand-500">View →</span></td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Drilled-down student list for selected month */}
+      {selectedMonth && (
+        <div className="animate-fu">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h3 className="font-semibold text-gray-900">
+                {new Date(selectedMonth+'-01').toLocaleString('en-IN',{month:'long',year:'numeric'})}
+              </h3>
+              <div className="text-xs text-gray-400 mt-0.5">{studentList.length} students · {monthStudents.length} payments · Total: {fmt(monthTotal)}</div>
+            </div>
+            <button onClick={() => setSelectedMonth(null)} className="btn btn-sm">
+              <X className="w-3 h-3"/> All Months
+            </button>
+          </div>
+
+          <div className="space-y-2">
+            {studentList.map((stu, i) => {
+              const stuTotal = stu.payments.reduce((a: number, p: any) => a + p.amount, 0)
+              const stuDisc  = stu.payments.reduce((a: number, p: any) => a + (p.discount || 0), 0)
+              return (
+                <div key={stu.name} className="card p-0 overflow-hidden">
+                  {/* Student header */}
+                  <div className="flex items-center justify-between px-4 py-3 bg-gray-50/60 border-b border-gray-100">
+                    <div className="flex items-center gap-2.5">
+                      <div className={clsx('w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold', ac(i))}>
+                        {ini(stu.name)}
+                      </div>
+                      <div>
+                        <div className="text-sm font-semibold text-gray-900">{stu.name}</div>
+                        {stu.email && <div className="text-xs text-gray-400">{stu.email}</div>}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-sm font-bold text-emerald-700">{fmt(stuTotal)}</div>
+                      {stuDisc > 0 && <div className="text-xs text-blue-600">-{fmt(stuDisc)} disc</div>}
+                    </div>
+                  </div>
+
+                  {/* Payment rows */}
+                  {stu.payments.map((p: any) => (
+                    <div key={p.id} className="flex items-center justify-between px-4 py-2.5 border-b border-gray-50 last:border-0 hover:bg-gray-50/40">
+                      <div className="flex items-center gap-3">
+                        {p.subjects && (
+                          <span className={clsx('badge text-xs', colorBadge[p.subjects.color] || colorBadge.violet)}>
+                            {p.subjects.name}
+                          </span>
+                        )}
+                        <div className="text-xs text-gray-400">
+                          {p.payment_date}
+                          {p.invoice_number && ` · Inv #${p.invoice_number}`}
+                          {p.mode_of_payment && ` · ${p.mode_of_payment}`}
+                          {p.recorded_by && ` · ${p.recorded_by}`}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        {p.discount > 0 && <span className="text-xs text-blue-500">-{fmt(p.discount)}</span>}
+                        <span className="text-sm font-semibold">{fmt(p.amount)}</span>
+                        <span className={clsx('badge text-xs',
+                          p.status==='paid'?'bg-emerald-50 text-emerald-700':
+                          p.status==='failed'?'bg-red-50 text-red-400':'bg-amber-50 text-amber-700'
+                        )}>{p.status}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )
+            })}
+          </div>
+
+          {/* Month totals footer */}
+          <div className="mt-4 p-4 bg-gray-50 rounded-xl border border-gray-200">
+            <div className="grid grid-cols-3 gap-4 text-center">
+              <div><div className="text-lg font-bold text-emerald-700">{fmt(monthTotal)}</div><div className="text-xs text-gray-400">Total Collected</div></div>
+              <div><div className="text-lg font-bold text-gray-700">{studentList.length}</div><div className="text-xs text-gray-400">Students</div></div>
+              <div><div className="text-lg font-bold text-blue-600">{fmt(monthStudents.reduce((a: number, p: any) => a + (p.discount||0), 0))}</div><div className="text-xs text-gray-400">Total Discounts</div></div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
