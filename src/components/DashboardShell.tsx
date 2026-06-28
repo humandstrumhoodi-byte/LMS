@@ -6,7 +6,7 @@ import {
   LayoutDashboard, Users, GraduationCap, BookOpen, CalendarDays, Coins,
   Receipt, ShieldCheck, LogOut, Music, Bell, FileText, CheckCircle,
   Plus, Trash2, Edit, Search, X, ChevronRight, Loader2, AlertCircle,
-  Upload, Download, UserPlus, Mail, Send, Eye, EyeOff, CreditCard, Phone, KeyRound, RefreshCw
+  Upload, Download, UserPlus, Mail, Send, Eye, EyeOff, CreditCard, Phone, KeyRound, RefreshCw, BarChart2
 } from 'lucide-react'
 import clsx from 'clsx'
 import type { Profile, Perms, Role } from '@/types'
@@ -255,6 +255,7 @@ function DashboardShellInner({profile}:{profile:Profile}){
   const [leads,setLeads]=useState<any[]>([])
   const [packages,setPackages]=useState<any[]>([])
   const [subjectTeachers,setSubjectTeachers]=useState<any[]>([])
+  const [attendance,setAttendance]=useState<any[]>([])
 
   const load=useCallback(async()=>{
     try{
@@ -279,6 +280,10 @@ function DashboardShellInner({profile}:{profile:Profile}){
         const st = await client.from('subject_teachers').select('*, profiles(id,full_name,role)').order('subject_id').order('grade_level')
         setSubjectTeachers(st.data||[])
       }catch(stErr){ console.warn('[subject_teachers] Table may not exist yet — run add_subject_teachers.sql') }
+      try{
+        const att = await client.from('attendance').select('*, students(full_name), profiles(full_name), class_schedules(day_of_week,start_time,subjects(name))').order('class_date',{ascending:false}).limit(500)
+        setAttendance(att.data||[])
+      }catch(attErr){ console.warn('[attendance] Table may not exist yet') }
     }catch(e){console.error('[LMS load error]',e)}
   },[])
 
@@ -333,6 +338,8 @@ function DashboardShellInner({profile}:{profile:Profile}){
           {tab==='schedule'&&<ScheduleTab schedules={schedules} subjects={subjects} students={students} profile={profile} perms={perms} reload={load}/>}
           {tab==='fees'&&<FeesTab subjects={subjects} fees={fees} reload={load}/>}
           {tab==='payments'&&<PaymentsTab payments={payments} students={students} subjects={subjects} fees={fees} perms={perms} reload={load}/>}
+          {tab==='reports'&&<ReportsTab students={students} subjects={subjects} payments={payments} profiles={profiles} attendance={attendance}/>}
+          {tab==='attendance'&&<AttendanceTab schedules={schedules} subjects={subjects} students={students} profiles={profiles} profile={profile} attendance={attendance} reload={load}/>}
           {tab==='users'&&<UsersTab profiles={profiles} profile={profile} reload={load}/>}
         </div>
       </main>
@@ -2041,6 +2048,715 @@ function StudentDetailModal({ student, payments, subjects, onClose }: any) {
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════
+// REPORTS TAB
+// ══════════════════════════════════════════════════════════════
+function ReportsTab({ students, subjects, payments, profiles, attendance }: any) {
+  const [activeReport, setActiveReport] = useState<string>('students_instrument')
+
+  // ── helpers ──────────────────────────────────────────────────
+  const paidPayments = payments.filter((p: any) => p.status === 'paid')
+  const currentYear = new Date().getFullYear()
+  const ytdPayments = paidPayments.filter((p: any) => p.payment_date?.startsWith(String(currentYear)))
+
+  // Students by instrument/subject
+  const studentsBySubject: Record<string, number> = {}
+  subjects.forEach((s: any) => {
+    const count = students.filter((st: any) =>
+      (st.student_subjects || []).some((ss: any) => ss.subject_id === s.id)
+    ).length
+    if (count > 0) studentsBySubject[s.name] = count
+  })
+
+  // Students by status
+  const activeStudents = students.filter((s: any) => s.status === 'Active').length
+  const inactiveStudents = students.length - activeStudents
+
+  // Payments by month (last 12)
+  const monthlyCollection: Record<string, number> = {}
+  paidPayments.forEach((p: any) => {
+    if (!p.payment_date) return
+    const key = p.payment_date.slice(0, 7) // YYYY-MM
+    monthlyCollection[key] = (monthlyCollection[key] || 0) + p.amount
+  })
+  const last12Months = Array.from({ length: 12 }, (_, i) => {
+    const d = new Date(); d.setMonth(d.getMonth() - 11 + i)
+    return d.toISOString().slice(0, 7)
+  })
+
+  // Payments by mode
+  const byMode: Record<string, number> = {}
+  paidPayments.forEach((p: any) => {
+    const mode = p.mode_of_payment || 'Unknown'
+    byMode[mode] = (byMode[mode] || 0) + p.amount
+  })
+
+  // Payments by subject
+  const bySubject: Record<string, number> = {}
+  payments.forEach((p: any) => {
+    if (p.status !== 'paid') return
+    const name = p.subjects?.name || 'Other'
+    bySubject[name] = (bySubject[name] || 0) + p.amount
+  })
+
+  // YTD by month
+  const ytdByMonth: Record<string, number> = {}
+  ytdPayments.forEach((p: any) => {
+    const key = p.payment_date?.slice(0, 7)
+    if (key) ytdByMonth[key] = (ytdByMonth[key] || 0) + p.amount
+  })
+
+  const totalYTD = ytdPayments.reduce((a: number, p: any) => a + p.amount, 0)
+  const totalEver = paidPayments.reduce((a: number, p: any) => a + p.amount, 0)
+
+  // Attendance stats
+  const attPresent = attendance.filter((a: any) => a.status === 'present' && a.type === 'student').length
+  const attAbsent = attendance.filter((a: any) => a.status === 'absent' && a.type === 'student').length
+  const attBillable = attendance.filter((a: any) => a.status === 'absent_billable' && a.type === 'student').length
+
+  const reports = [
+    { id: 'students_instrument', label: 'Students by Instrument' },
+    { id: 'students_payment',    label: 'Students by Payment' },
+    { id: 'payment_monthly',     label: 'Monthly Collection' },
+    { id: 'payment_ytd',         label: 'Year to Date' },
+    { id: 'payment_mode',        label: 'Payment by Mode' },
+    { id: 'payment_subject',     label: 'Revenue by Subject' },
+    { id: 'attendance_report',   label: 'Attendance Summary' },
+  ]
+
+  const BAR_COLORS = ['#3B1F8C','#7B5FC4','#A98CE8','#4A2FA0','#6B55C8','#8F7ED5','#C8B5F5','#D8D1F0']
+
+  function BarChart({ data, valuePrefix = '₹' }: { data: Record<string,number>, valuePrefix?: string }) {
+    const entries = Object.entries(data).sort(([,a],[,b]) => b - a)
+    const max = Math.max(...entries.map(([,v]) => v), 1)
+    return (
+      <div className="space-y-2.5">
+        {entries.map(([label, value], i) => (
+          <div key={label}>
+            <div className="flex justify-between text-xs text-gray-600 mb-1">
+              <span className="truncate max-w-[180px] font-medium">{label}</span>
+              <span className="font-semibold ml-2">{valuePrefix === '₹' ? fmt(value) : value}</span>
+            </div>
+            <div className="h-6 bg-gray-100 rounded-full overflow-hidden">
+              <div
+                className="h-full rounded-full transition-all duration-500"
+                style={{ width: `${(value / max) * 100}%`, background: BAR_COLORS[i % BAR_COLORS.length] }}
+              />
+            </div>
+          </div>
+        ))}
+        {!entries.length && <div className="text-center text-gray-300 py-8">No data</div>}
+      </div>
+    )
+  }
+
+  function MonthChart({ data, months }: { data: Record<string,number>, months: string[] }) {
+    const max = Math.max(...months.map(m => data[m] || 0), 1)
+    return (
+      <div>
+        <div className="flex items-end gap-1.5 h-40 mb-2">
+          {months.map((m, i) => {
+            const val = data[m] || 0
+            const pct = (val / max) * 100
+            const label = new Date(m + '-01').toLocaleString('en-IN', { month: 'short' })
+            return (
+              <div key={m} className="flex-1 flex flex-col items-center gap-1">
+                <div className="w-full relative flex items-end" style={{ height: '120px' }}>
+                  <div
+                    className="w-full rounded-t-md transition-all duration-500"
+                    style={{ height: `${pct}%`, minHeight: val > 0 ? 4 : 0, background: BAR_COLORS[i % BAR_COLORS.length] }}
+                    title={`${label}: ${fmt(val)}`}
+                  />
+                </div>
+                <div className="text-xs text-gray-400">{label}</div>
+              </div>
+            )
+          })}
+        </div>
+        <div className="flex justify-between text-xs text-gray-400 mt-2 border-t border-gray-100 pt-2">
+          <span>Total: <strong className="text-gray-700">{fmt(months.reduce((a, m) => a + (data[m] || 0), 0))}</strong></span>
+          <span>Avg/mo: <strong className="text-gray-700">{fmt(Math.round(months.reduce((a, m) => a + (data[m] || 0), 0) / months.filter(m => data[m]).length || 1))}</strong></span>
+        </div>
+      </div>
+    )
+  }
+
+  // Export CSV helper
+  function exportCSV(data: Record<string,any>[], filename: string) {
+    const keys = Object.keys(data[0] || {})
+    const csv = [keys.join(','), ...data.map(r => keys.map(k => `"${r[k] || ''}"`).join(','))].join('\n')
+    const a = document.createElement('a')
+    a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv)
+    a.download = filename
+    a.click()
+  }
+
+  return (
+    <div className="animate-fu">
+      <div className="flex items-center justify-between mb-5">
+        <div>
+          <h1 className="text-xl font-semibold text-gray-900">Reports</h1>
+          <p className="text-sm text-gray-400 mt-0.5">Analytics & insights</p>
+        </div>
+        {/* Summary pills */}
+        <div className="flex gap-2 text-xs">
+          <div className="px-3 py-1.5 bg-emerald-50 text-emerald-700 rounded-lg font-medium">YTD: {fmt(totalYTD)}</div>
+          <div className="px-3 py-1.5 bg-brand-50 text-brand-700 rounded-lg font-medium">Ever: {fmt(totalEver)}</div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-4 gap-4 mb-6">
+        {[
+          { label:'Active Students', val:activeStudents, sub:`${inactiveStudents} inactive`, color:'bg-blue-50 text-blue-700' },
+          { label:'Subjects Offered', val:subjects.length, sub:`${Object.keys(studentsBySubject).length} with students`, color:'bg-violet-50 text-violet-700' },
+          { label:'Collected YTD', val:fmt(totalYTD), sub:`${new Date().getFullYear()}`, color:'bg-emerald-50 text-emerald-700' },
+          { label:'Attendance Rate', val:attPresent+attAbsent+attBillable>0?`${Math.round(attPresent/(attPresent+attAbsent+attBillable)*100)}%`:'—', sub:`${attPresent} present · ${attBillable} billable`, color:'bg-amber-50 text-amber-700' },
+        ].map(m => (
+          <div key={m.label} className={clsx('card p-4 border-0', m.color)}>
+            <div className="text-xs font-medium opacity-70 mb-1">{m.label}</div>
+            <div className="text-2xl font-bold">{m.val}</div>
+            <div className="text-xs opacity-60 mt-0.5">{m.sub}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-4 gap-5">
+        {/* Left nav */}
+        <div className="col-span-1">
+          <div className="card p-2">
+            <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider px-2 py-1.5">Student Reports</div>
+            {reports.slice(0,2).map(r => (
+              <button key={r.id} onClick={() => setActiveReport(r.id)}
+                className={clsx('w-full text-left px-3 py-2.5 rounded-lg text-sm transition-all mb-0.5',
+                  activeReport===r.id ? 'bg-brand-500 text-white font-medium' : 'text-gray-600 hover:bg-gray-50'
+                )}>
+                {r.label}
+              </button>
+            ))}
+            <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider px-2 py-1.5 mt-2">Payment Reports</div>
+            {reports.slice(2,6).map(r => (
+              <button key={r.id} onClick={() => setActiveReport(r.id)}
+                className={clsx('w-full text-left px-3 py-2.5 rounded-lg text-sm transition-all mb-0.5',
+                  activeReport===r.id ? 'bg-brand-500 text-white font-medium' : 'text-gray-600 hover:bg-gray-50'
+                )}>
+                {r.label}
+              </button>
+            ))}
+            <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider px-2 py-1.5 mt-2">Other</div>
+            {reports.slice(6).map(r => (
+              <button key={r.id} onClick={() => setActiveReport(r.id)}
+                className={clsx('w-full text-left px-3 py-2.5 rounded-lg text-sm transition-all mb-0.5',
+                  activeReport===r.id ? 'bg-brand-500 text-white font-medium' : 'text-gray-600 hover:bg-gray-50'
+                )}>
+                {r.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Right content */}
+        <div className="col-span-3 card p-5">
+          {activeReport === 'students_instrument' && (
+            <div>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="font-semibold text-gray-900">Students by Instrument</h2>
+                <button onClick={() => exportCSV(Object.entries(studentsBySubject).map(([Subject,Count]) => ({Subject,Count})), 'students_by_instrument.csv')} className="btn btn-sm"><Download className="w-3 h-3"/> Export</button>
+              </div>
+              <BarChart data={studentsBySubject} valuePrefix="" />
+              <div className="mt-5 grid grid-cols-3 gap-3">
+                {Object.entries(studentsBySubject).sort(([,a],[,b]) => b-a).map(([name, count]) => (
+                  <div key={name} className="bg-gray-50 rounded-xl p-3 text-center">
+                    <div className="text-xl font-bold text-gray-900">{count}</div>
+                    <div className="text-xs text-gray-500 mt-0.5">{name}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {activeReport === 'students_payment' && (
+            <div>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="font-semibold text-gray-900">Students by Payment Status</h2>
+                <button onClick={() => exportCSV(
+                  students.map((s: any) => {
+                    const sp = payments.filter((p: any) => p.student_id === s.id || p.student_id_ext === s.student_id_ext)
+                    const lastPaid = sp.filter((p: any) => p.status === 'paid').sort((a: any, b: any) => b.payment_date?.localeCompare(a.payment_date))[0]
+                    return { Name: s.full_name, Email: s.email||'', Phone: s.phone||'', Status: s.status||'Active', TotalPaid: sp.filter((p:any)=>p.status==='paid').reduce((a:number,p:any)=>a+p.amount,0), LastPayment: lastPaid?.payment_date||'Never' }
+                  }), 'students_payment.csv'
+                )} className="btn btn-sm"><Download className="w-3 h-3"/> Export</button>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead><tr><th className="th">Student</th><th className="th">Status</th><th className="th text-right">Total Paid</th><th className="th">Last Payment</th><th className="th">Subjects</th></tr></thead>
+                  <tbody>
+                    {students.map((s: any) => {
+                      const sp = payments.filter((p: any) => p.student_id === s.id)
+                      const total = sp.filter((p: any) => p.status === 'paid').reduce((a: number, p: any) => a + p.amount, 0)
+                      const lastPaid = sp.filter((p: any) => p.status === 'paid').sort((a: any, b: any) => (b.payment_date || '').localeCompare(a.payment_date || ''))[0]
+                      const subs = subjects.filter((sub: any) => (s.student_subjects || []).some((ss: any) => ss.subject_id === sub.id))
+                      return (
+                        <tr key={s.id} className="hover:bg-gray-50/50">
+                          <td className="td"><div className="font-medium">{s.full_name}</div><div className="text-xs text-gray-400">{s.email}</div></td>
+                          <td className="td"><span className={clsx('badge', s.status==='Active'?'bg-emerald-50 text-emerald-700':'bg-gray-100 text-gray-500')}>{s.status||'Active'}</span></td>
+                          <td className="td text-right font-semibold text-emerald-700">{fmt(total)}</td>
+                          <td className="td text-gray-400">{lastPaid?.payment_date || 'Never'}</td>
+                          <td className="td"><div className="flex flex-wrap gap-0.5">{subs.map((sub: any) => <span key={sub.id} className={clsx('badge text-xs', colorBadge[sub.color]||colorBadge.violet)}>{sub.code}</span>)}</div></td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {activeReport === 'payment_monthly' && (
+            <div>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="font-semibold text-gray-900">Monthly Collection (Last 12 Months)</h2>
+                <button onClick={() => exportCSV(last12Months.map(m => ({ Month: m, Amount: monthlyCollection[m]||0 })), 'monthly_collection.csv')} className="btn btn-sm"><Download className="w-3 h-3"/> Export</button>
+              </div>
+              <MonthChart data={monthlyCollection} months={last12Months} />
+              <div className="mt-4 overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead><tr><th className="th">Month</th><th className="th text-right">Collected</th><th className="th text-right">Transactions</th></tr></thead>
+                  <tbody>
+                    {last12Months.slice().reverse().map(m => {
+                      const txns = paidPayments.filter((p: any) => p.payment_date?.startsWith(m)).length
+                      return (
+                        <tr key={m} className="hover:bg-gray-50/50">
+                          <td className="td">{new Date(m+'-01').toLocaleString('en-IN',{month:'long',year:'numeric'})}</td>
+                          <td className="td text-right font-semibold">{fmt(monthlyCollection[m]||0)}</td>
+                          <td className="td text-right text-gray-400">{txns}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {activeReport === 'payment_ytd' && (
+            <div>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="font-semibold text-gray-900">Year to Date — {currentYear}</h2>
+                <button onClick={() => exportCSV(Object.entries(ytdByMonth).map(([Month,Amount]) => ({Month,Amount})), `ytd_${currentYear}.csv`)} className="btn btn-sm"><Download className="w-3 h-3"/> Export</button>
+              </div>
+              <div className="grid grid-cols-3 gap-4 mb-5">
+                <div className="bg-emerald-50 rounded-xl p-4 text-center"><div className="text-2xl font-bold text-emerald-700">{fmt(totalYTD)}</div><div className="text-xs text-emerald-600 mt-1">Total Collected {currentYear}</div></div>
+                <div className="bg-blue-50 rounded-xl p-4 text-center"><div className="text-2xl font-bold text-blue-700">{ytdPayments.length}</div><div className="text-xs text-blue-600 mt-1">Transactions</div></div>
+                <div className="bg-violet-50 rounded-xl p-4 text-center"><div className="text-2xl font-bold text-violet-700">{fmt(Math.round(totalYTD / (Object.keys(ytdByMonth).length||1)))}</div><div className="text-xs text-violet-600 mt-1">Avg per Month</div></div>
+              </div>
+              <MonthChart
+                data={ytdByMonth}
+                months={Array.from({length: new Date().getMonth()+1}, (_,i) => `${currentYear}-${String(i+1).padStart(2,'0')}`)}
+              />
+            </div>
+          )}
+
+          {activeReport === 'payment_mode' && (
+            <div>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="font-semibold text-gray-900">Collection by Payment Mode</h2>
+                <button onClick={() => exportCSV(Object.entries(byMode).map(([Mode,Amount]) => ({Mode,Amount})), 'payment_by_mode.csv')} className="btn btn-sm"><Download className="w-3 h-3"/> Export</button>
+              </div>
+              <BarChart data={byMode} />
+              <div className="grid grid-cols-2 gap-3 mt-4">
+                {Object.entries(byMode).sort(([,a],[,b]) => b-a).map(([mode, amount], i) => {
+                  const pct = Math.round((amount / totalEver) * 100)
+                  return (
+                    <div key={mode} className="bg-gray-50 rounded-xl p-3">
+                      <div className="flex justify-between items-center mb-1"><span className="text-sm font-medium text-gray-700">{mode}</span><span className="text-xs text-gray-400">{pct}%</span></div>
+                      <div className="text-lg font-bold" style={{color: BAR_COLORS[i % BAR_COLORS.length]}}>{fmt(amount)}</div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {activeReport === 'payment_subject' && (
+            <div>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="font-semibold text-gray-900">Revenue by Subject</h2>
+                <button onClick={() => exportCSV(Object.entries(bySubject).map(([Subject,Amount]) => ({Subject,Amount})), 'revenue_by_subject.csv')} className="btn btn-sm"><Download className="w-3 h-3"/> Export</button>
+              </div>
+              <BarChart data={bySubject} />
+            </div>
+          )}
+
+          {activeReport === 'attendance_report' && (
+            <div>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="font-semibold text-gray-900">Attendance Summary</h2>
+              </div>
+              {attendance.length === 0
+                ? <div className="text-center py-10 text-gray-300">No attendance data yet. Mark attendance from the Attendance tab.</div>
+                : (
+                  <>
+                    <div className="grid grid-cols-4 gap-3 mb-5">
+                      {[
+                        { label:'Present', val:attPresent, color:'bg-emerald-50 text-emerald-700' },
+                        { label:'Absent (notified)', val:attAbsent, color:'bg-amber-50 text-amber-700' },
+                        { label:'Absent Billable', val:attBillable, color:'bg-red-50 text-red-700' },
+                        { label:'Attendance Rate', val:`${Math.round(attPresent/(attPresent+attAbsent+attBillable||1)*100)}%`, color:'bg-blue-50 text-blue-700' },
+                      ].map(m => (
+                        <div key={m.label} className={clsx('rounded-xl p-3 text-center', m.color)}>
+                          <div className="text-xl font-bold">{m.val}</div>
+                          <div className="text-xs opacity-70 mt-0.5">{m.label}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead><tr><th className="th">Date</th><th className="th">Student</th><th className="th">Class</th><th className="th">Status</th></tr></thead>
+                        <tbody>
+                          {attendance.filter((a: any) => a.type === 'student').slice(0, 50).map((a: any) => (
+                            <tr key={a.id} className="hover:bg-gray-50/50">
+                              <td className="td">{a.class_date}</td>
+                              <td className="td font-medium">{a.students?.full_name || '—'}</td>
+                              <td className="td text-gray-500">{(a.class_schedules as any)?.subjects?.name || '—'}</td>
+                              <td className="td">
+                                <span className={clsx('badge',
+                                  a.status==='present'?'bg-emerald-50 text-emerald-700':
+                                  a.status==='absent_billable'?'bg-red-50 text-red-700':
+                                  a.status==='late'?'bg-amber-50 text-amber-700':
+                                  'bg-gray-100 text-gray-600'
+                                )}>
+                                  {a.status==='absent_billable'?'Absent (billable)':a.status}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )
+              }
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════
+// ATTENDANCE TAB
+// ══════════════════════════════════════════════════════════════
+const ATT_STATUS = ['present','absent','absent_billable','late'] as const
+type AttStatus = typeof ATT_STATUS[number]
+const attLabel: Record<AttStatus,string> = { present:'Present', absent:'Absent (notified)', absent_billable:'Absent Billable', late:'Late' }
+const attColor: Record<AttStatus,string> = { present:'bg-emerald-50 text-emerald-700 border-emerald-200', absent:'bg-amber-50 text-amber-700 border-amber-200', absent_billable:'bg-red-50 text-red-700 border-red-200', late:'bg-blue-50 text-blue-700 border-blue-200' }
+const attBtnColor: Record<AttStatus,string> = { present:'bg-emerald-500 text-white border-emerald-500', absent:'bg-amber-500 text-white border-amber-500', absent_billable:'bg-red-500 text-white border-red-500', late:'bg-blue-500 text-white border-blue-500' }
+
+function AttendanceTab({ schedules, subjects, students, profiles, profile, attendance, reload }: any) {
+  const supabase = sb()
+  const isTeacher = profile.role === 'teacher'
+  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().slice(0, 10))
+  const [selectedClass, setSelectedClass] = useState<any>(null)
+  const [marking, setMarking] = useState(false)
+  const [viewMode, setViewMode] = useState<'mark'|'history'>('mark')
+
+  const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
+  const selectedDay = days[new Date(selectedDate + 'T00:00:00').getDay()]
+
+  // Classes for selected day
+  const dayClasses = schedules.filter((sc: any) => {
+    if (sc.day_of_week !== selectedDay) return false
+    if (isTeacher) {
+      const sub = subjects.find((s: any) => s.id === sc.subject_id)
+      return sub?.teacher_id === profile.id
+    }
+    return true
+  })
+
+  // Get attendance for selected class + date
+  const classAttendance = attendance.filter((a: any) =>
+    a.schedule_id === selectedClass?.id && a.class_date === selectedDate
+  )
+
+  const getStudentAtt = (studentId: string) =>
+    classAttendance.find((a: any) => a.student_id === studentId && a.type === 'student')
+
+  const getTeacherAtt = () =>
+    classAttendance.find((a: any) => a.type === 'teacher')
+
+  async function markAttendance(type: 'student' | 'teacher', entityId: string, status: AttStatus, notes?: string) {
+    if (!selectedClass) return
+    setMarking(true)
+
+    const payload: any = {
+      schedule_id: selectedClass.id,
+      class_date: selectedDate,
+      type,
+      status,
+      marked_by: profile.id,
+      notes: notes || null,
+    }
+    if (type === 'student') payload.student_id = entityId
+    else payload.teacher_id = entityId
+
+    // Upsert
+    const existing = type === 'student'
+      ? classAttendance.find((a: any) => a.student_id === entityId && a.type === 'student')
+      : classAttendance.find((a: any) => a.type === 'teacher')
+
+    if (existing) {
+      await supabase.from('attendance').update({ status, notes: notes || null, informed_at: status === 'absent' ? new Date().toISOString() : null }).eq('id', existing.id)
+    } else {
+      if (status === 'absent') payload.informed_at = new Date().toISOString()
+      await supabase.from('attendance').insert(payload)
+    }
+    setMarking(false)
+    reload()
+  }
+
+  async function markAllPresent() {
+    if (!selectedClass) return
+    const classStudents = (selectedClass.schedule_students || []).map((ss: any) => ss.student_id)
+    for (const sid of classStudents) {
+      const existing = classAttendance.find((a: any) => a.student_id === sid && a.type === 'student')
+      if (!existing) {
+        await supabase.from('attendance').insert({ schedule_id: selectedClass.id, class_date: selectedDate, type: 'student', student_id: sid, status: 'present', marked_by: profile.id })
+      }
+    }
+    reload()
+  }
+
+  const classSubject = selectedClass ? subjects.find((s: any) => s.id === selectedClass.subject_id) : null
+  const classStudentIds = (selectedClass?.schedule_students || []).map((ss: any) => ss.student_id)
+  const classStudents = students.filter((s: any) => classStudentIds.includes(s.id))
+  const classTeacherId = classSubject?.teacher_id
+  const classTeacher = profiles.find((p: any) => p.id === classTeacherId)
+
+  // History view
+  const recentAtt = attendance
+    .filter((a: any) => a.type === 'student')
+    .slice(0, 100)
+
+  return (
+    <div className="animate-fu">
+      <div className="flex items-center justify-between mb-5">
+        <div>
+          <h1 className="text-xl font-semibold text-gray-900">Attendance</h1>
+          <p className="text-sm text-gray-400 mt-0.5">Mark and track student & teacher attendance</p>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={() => setViewMode('mark')} className={clsx('btn', viewMode==='mark'&&'btn-primary')}>Mark Attendance</button>
+          <button onClick={() => setViewMode('history')} className={clsx('btn', viewMode==='history'&&'btn-primary')}>History</button>
+        </div>
+      </div>
+
+      {viewMode === 'mark' && (
+        <div className="grid grid-cols-3 gap-5">
+          {/* Left: date + class picker */}
+          <div className="space-y-4">
+            <div className="card p-4">
+              <label className="label">Select Date</label>
+              <input
+                type="date"
+                className="input"
+                value={selectedDate}
+                onChange={e => { setSelectedDate(e.target.value); setSelectedClass(null) }}
+              />
+              <div className="mt-2 text-xs text-gray-400">{selectedDay} classes: <strong>{dayClasses.length}</strong></div>
+            </div>
+
+            <div className="card p-4">
+              <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Classes on {selectedDay}</div>
+              {dayClasses.length === 0
+                ? <div className="text-sm text-gray-300 py-4 text-center">No classes on {selectedDay}</div>
+                : dayClasses.map((cls: any) => {
+                    const sub = subjects.find((s: any) => s.id === cls.subject_id)
+                    const stuCount = (cls.schedule_students || []).length
+                    const markedCount = attendance.filter((a: any) => a.schedule_id === cls.id && a.class_date === selectedDate && a.type === 'student').length
+                    const isSelected = selectedClass?.id === cls.id
+                    return (
+                      <button
+                        key={cls.id}
+                        onClick={() => setSelectedClass(cls)}
+                        className={clsx('w-full text-left p-3 rounded-xl border mb-2 transition-all',
+                          isSelected ? 'border-brand-500 bg-brand-50' : 'border-gray-100 hover:border-gray-200 bg-white'
+                        )}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className={clsx('badge text-xs mb-1', sub ? (colorBadge[sub.color]||colorBadge.violet) : 'bg-gray-100 text-gray-600')}>{sub?.name||'Unknown'}</div>
+                            <div className="text-xs text-gray-500 font-mono">{cls.start_time?.slice(0,5)} · {cls.duration_minutes}m</div>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-xs font-semibold text-gray-700">{markedCount}/{stuCount}</div>
+                            <div className="text-xs text-gray-400">marked</div>
+                          </div>
+                        </div>
+                      </button>
+                    )
+                  })
+              }
+            </div>
+          </div>
+
+          {/* Right: attendance marking */}
+          <div className="col-span-2">
+            {!selectedClass
+              ? (
+                <div className="card p-12 text-center">
+                  <CheckCircle className="w-12 h-12 text-gray-200 mx-auto mb-3"/>
+                  <p className="text-gray-400">Select a class on the left to mark attendance</p>
+                </div>
+              )
+              : (
+                <div className="card">
+                  {/* Class header */}
+                  <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+                    <div>
+                      <div className="font-semibold text-gray-900">{classSubject?.name} — {selectedDate}</div>
+                      <div className="text-xs text-gray-400 mt-0.5">{selectedClass.start_time?.slice(0,5)} · {selectedClass.duration_minutes} min · {classStudents.length} students</div>
+                    </div>
+                    <button onClick={markAllPresent} className="btn btn-sm bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100">
+                      <CheckCircle className="w-3.5 h-3.5"/> Mark All Present
+                    </button>
+                  </div>
+
+                  <div className="p-5 space-y-4">
+                    {/* Teacher attendance */}
+                    {classTeacher && (
+                      <div>
+                        <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Teacher</div>
+                        <div className="flex items-center justify-between p-3 bg-gray-50 rounded-xl">
+                          <div className="flex items-center gap-2">
+                            <div className={clsx('w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold', ac(1))}>{ini(classTeacher.full_name)}</div>
+                            <span className="text-sm font-medium text-gray-800">{classTeacher.full_name}</span>
+                          </div>
+                          <div className="flex gap-1.5">
+                            {(['present','absent','late'] as AttStatus[]).map(s => {
+                              const tAtt = getTeacherAtt()
+                              const isActive = tAtt?.status === s
+                              return (
+                                <button
+                                  key={s}
+                                  onClick={() => markAttendance('teacher', classTeacherId, s)}
+                                  disabled={marking}
+                                  className={clsx('px-2.5 py-1 rounded-lg border text-xs font-medium transition-all',
+                                    isActive ? attBtnColor[s] : 'border-gray-200 text-gray-400 hover:border-gray-300 bg-white'
+                                  )}
+                                >
+                                  {s === 'present' ? '✓' : s === 'absent' ? 'Absent' : 'Late'}
+                                </button>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Student attendance */}
+                    <div>
+                      <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Students ({classStudents.length})</div>
+                      {classStudents.length === 0
+                        ? <div className="text-sm text-gray-300 py-4 text-center">No students assigned to this class</div>
+                        : <div className="space-y-2">
+                            {classStudents.map((stu: any, i: number) => {
+                              const att = getStudentAtt(stu.id)
+                              return (
+                                <div key={stu.id} className={clsx('flex items-center justify-between p-3 rounded-xl border transition-all',
+                                  att ? (attColor[att.status as AttStatus] || 'border-gray-100 bg-white') : 'border-gray-100 bg-white'
+                                )}>
+                                  <div className="flex items-center gap-2.5">
+                                    <div className={clsx('w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold', ac(i))}>{ini(stu.full_name)}</div>
+                                    <div>
+                                      <div className="text-sm font-medium text-gray-800">{stu.full_name}</div>
+                                      {att && <div className="text-xs text-gray-400">{attLabel[att.status as AttStatus]}{att.informed_at ? ` · informed ${new Date(att.informed_at).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}` : ''}</div>}
+                                    </div>
+                                  </div>
+                                  <div className="flex gap-1">
+                                    {ATT_STATUS.map(s => {
+                                      const isActive = att?.status === s
+                                      return (
+                                        <button
+                                          key={s}
+                                          onClick={() => markAttendance('student', stu.id, s)}
+                                          disabled={marking}
+                                          title={attLabel[s]}
+                                          className={clsx('w-8 h-8 rounded-lg border text-xs font-bold transition-all flex items-center justify-center',
+                                            isActive ? attBtnColor[s] : 'border-gray-200 text-gray-300 hover:border-gray-400 hover:text-gray-500 bg-white'
+                                          )}
+                                        >
+                                          {s==='present'?'✓':s==='absent'?'A':s==='absent_billable'?'B':'L'}
+                                        </button>
+                                      )
+                                    })}
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                      }
+                    </div>
+
+                    {/* Legend */}
+                    <div className="flex gap-3 pt-2 border-t border-gray-100">
+                      {ATT_STATUS.map(s => (
+                        <div key={s} className="flex items-center gap-1.5 text-xs text-gray-500">
+                          <div className={clsx('w-5 h-5 rounded flex items-center justify-center text-xs font-bold border', attBtnColor[s])}>
+                            {s==='present'?'✓':s==='absent'?'A':s==='absent_billable'?'B':'L'}
+                          </div>
+                          {attLabel[s]}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )
+            }
+          </div>
+        </div>
+      )}
+
+      {viewMode === 'history' && (
+        <div className="card">
+          <div className="px-5 py-4 border-b border-gray-100">
+            <h2 className="text-sm font-semibold text-gray-900">Recent Attendance (last 100 records)</h2>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead><tr>
+                <th className="th">Date</th>
+                <th className="th">Student</th>
+                <th className="th">Class</th>
+                <th className="th">Status</th>
+                <th className="th">Informed At</th>
+                <th className="th">Notes</th>
+              </tr></thead>
+              <tbody>
+                {recentAtt.map((a: any) => (
+                  <tr key={a.id} className="hover:bg-gray-50/50">
+                    <td className="td text-gray-500">{a.class_date}</td>
+                    <td className="td font-medium">{a.students?.full_name || '—'}</td>
+                    <td className="td text-gray-500">{(a.class_schedules as any)?.subjects?.name || '—'}</td>
+                    <td className="td">
+                      <span className={clsx('badge', attColor[a.status as AttStatus]?.split(' ').slice(0,2).join(' ') || 'bg-gray-100 text-gray-600')}>
+                        {attLabel[a.status as AttStatus] || a.status}
+                      </span>
+                    </td>
+                    <td className="td text-gray-400 text-xs">{a.informed_at ? new Date(a.informed_at).toLocaleString('en-IN') : '—'}</td>
+                    <td className="td text-gray-400 text-xs">{a.notes || '—'}</td>
+                  </tr>
+                ))}
+                {!recentAtt.length && <tr><td colSpan={6} className="td text-center text-gray-300 py-8">No attendance records yet</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
