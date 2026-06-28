@@ -6,7 +6,7 @@ import {
   LayoutDashboard, Users, GraduationCap, BookOpen, CalendarDays, Coins,
   Receipt, ShieldCheck, LogOut, Music, Bell, FileText, CheckCircle,
   Plus, Trash2, Edit, Search, X, ChevronRight, Loader2, AlertCircle,
-  Upload, Download, UserPlus, Mail, Send, Eye, CreditCard, Phone
+  Upload, Download, UserPlus, Mail, Send, Eye, EyeOff, CreditCard, Phone, KeyRound, RefreshCw
 } from 'lucide-react'
 import clsx from 'clsx'
 import type { Profile, Perms, Role } from '@/types'
@@ -64,21 +64,46 @@ function mapStudent(row:Record<string,string>){
 }
 
 function mapPayment(row:Record<string,string>){
-  const status = row['status']?.toLowerCase()==='successful'?'paid':row['status']?.toLowerCase()==='failed'?'failed':'pending'
+  // Normalize keys — strip all special chars, lowercase, trim
+  // e.g. "Receipt #" -> "receipt_", "Mode of Payment" -> "mode_of_payment"
+  const r: Record<string,string> = {}
+  Object.entries(row).forEach(([k,v]) => {
+    const normalized = k.toLowerCase().trim()
+      .replace(/[^a-z0-9]+/g, '_')  // replace non-alphanumeric runs with _
+      .replace(/^_|_$/g, '')         // strip leading/trailing _
+    r[normalized] = v
+  })
+
+  // Debug: log first row keys to console
+  if (typeof window !== 'undefined' && (window as any).__payDebug !== true) {
+    console.log('[Payment Import] Normalized keys:', Object.keys(r))
+    ;(window as any).__payDebug = true
+  }
+
+  const rawStatus = (r['status']||'').toLowerCase()
+  const status = rawStatus==='successful'?'paid':rawStatus==='failed'?'failed':'pending'
+
+  const dateStr = r['date']||r['payment_date']||null
+  let month_label = ''
+  if (dateStr) {
+    try { month_label = new Date(dateStr).toLocaleString('en-IN',{month:'long',year:'numeric'}) } catch {}
+  }
+
   return {
-    payment_date:row['date']||null,
-    amount:parseInt(row['amount'])||0,
-    receipt_number:row['receipt #']||row['receipt_number']||null,
-    invoice_number:row['invoice #']||row['invoice_number']||null,
-    description:row['payment description']||row['description']||null,
-    mode_of_payment:row['mode of payment']||row['mode_of_payment']||'UPI',
-    transaction_id:row['transaction id']||row['transaction_id']||null,
-    student_name:row['student']||null,
-    student_email:row['student email']||row['student_email']||null,
-    student_phone:row['student phone']||row['student_phone']||null,
-    student_id_ext:row['student id']||row['student_id']||null,
-    status, recorded_by:row['recorded by']||row['recorded_by']||null,
-    month_label: row['date'] ? new Date(row['date']).toLocaleString('en-IN',{month:'long',year:'numeric'}) : '',
+    payment_date:   dateStr?.slice(0,10) || null,
+    amount:         parseInt(r['amount']||'0') || 0,
+    receipt_number: r['receipt_'] || r['receipt_number'] || r['receipt'] || null,
+    invoice_number: r['invoice_'] || r['invoice_number'] || r['invoice'] || null,
+    description:    r['payment_description'] || r['description'] || null,
+    mode_of_payment:r['mode_of_payment'] || r['mode_of_payment_'] || 'UPI',
+    transaction_id: r['transaction_id'] || r['transaction_id_'] || null,
+    student_name:   r['student'] || r['student_name'] || null,
+    student_email:  r['student_email'] || r['student_email_'] || null,
+    student_phone:  r['student_phone'] || r['student_phone_'] || null,
+    student_id_ext: r['student_id'] || r['student_id_ext'] || null,
+    recorded_by:    r['recorded_by'] || r['recorded_by_'] || null,
+    status,
+    month_label,
   }
 }
 
@@ -111,43 +136,82 @@ function Modal({open,onClose,title,children,wide,xl}:{open:boolean;onClose:()=>v
 function Avatar({name,i}:{name:string;i:number}){return<div className={clsx('w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold flex-shrink-0',ac(i))}>{ini(name)}</div>}
 
 // ── CSV Import Panel ──────────────────────────────────────────
-function ImportPanel({type,onImport,subjects}:{type:'students'|'payments'|'staff';onImport:(rows:any[])=>void;subjects?:any[]}){
+function ImportPanel({type,onImport}:{type:'students'|'payments'|'staff';onImport:(rows:any[],rawText?:string)=>void}){
   const fileRef=useRef<HTMLInputElement>(null)
   const [rows,setRows]=useState<any[]>([])
   const [error,setError]=useState('')
+  const [reading,setReading]=useState(false)
+  const [rawCSV,setRawCSV]=useState('')
   const templates:Record<string,string>={
     students:'"First Name","Last Name","Name","Status","Email","Phone","Guardian Name","Guardian Phone","Guardian Email","Created On","Batch","Student ID Prefix","Student ID","Courses","School Year","School Name","Refferal Source","Nationality","Area","City","Date Of Birth","Age","Signup Source","Gender"\n"Arjun","Mehta","Arjun Mehta","Active","arjun@email.com","+91 98765 43210","","","","2024-01-15 00:00:00","","","1","Guitar","","","Instagram","IN","Hoodi","Bengaluru","2012-06-15","12","Manual entry","Male"',
     payments:'"Date","Amount","Receipt #","Invoice #","Payment Description","Mode of Payment","Transaction ID","Response Code","Student","Student Email","Student Phone","Student ID","Status","Created","Recorded By"\n"2026-06-28","2200","402","407","","UPI","","","Arjun Mehta","arjun@email.com","+91 98765 43210","1","Successful","2026-06-28 06:36:12","Benjamin Singh"',
     staff:'"Name","Role","Calendar","Phone","Email"\n"Sadhana Singh","Teacher","","+91 98838 81289","singh.sadna24@gmail.com"',
   }
   function handleFile(e:React.ChangeEvent<HTMLInputElement>){
-    setError('');setRows([])
+    setError('');setRows([]);setRawCSV('')
     const file=e.target.files?.[0];if(!file)return
+    setReading(true)
     const reader=new FileReader()
-    reader.onload=(ev)=>{try{const parsed=parseCSV(ev.target?.result as string);if(!parsed.length){setError('No data rows found.');return}setRows(parsed)}catch{setError('Could not read file. Use CSV format.')}}
+    reader.onload=(ev)=>{
+      try{
+        const text=ev.target?.result as string
+        const parsed=parseCSV(text)
+        if(!parsed.length){setError('No data rows found. Check the file has a header row.');setReading(false);return}
+        setRows(parsed);setRawCSV(text)
+      }catch{setError('Could not read file. Use CSV format.')}
+      setReading(false)
+    }
+    reader.onerror=()=>{setError('File read failed.');setReading(false)}
     reader.readAsText(file)
   }
   const previewCols=rows[0]?Object.keys(rows[0]).slice(0,6):[]
   return(
     <div className="space-y-4">
-      <div className="flex gap-2">
-        <a href={`data:text/csv;charset=utf-8,${encodeURIComponent(templates[type])}`} download={`${type}-template.csv`} className="btn btn-sm flex-1 justify-center"><Download className="w-3 h-3"/> Download Template</a>
+      <a href={`data:text/csv;charset=utf-8,${encodeURIComponent(templates[type])}`} download={`${type}-template.csv`} className="btn btn-sm w-full justify-center"><Download className="w-3 h-3"/> Download {type} Template</a>
+      <div>
+        <label className="label">Upload CSV file</label>
+        <label className={clsx('flex flex-col items-center justify-center w-full border-2 border-dashed rounded-xl cursor-pointer transition-all p-6 text-center',reading?'border-brand-400 bg-brand-50':rows.length?'border-emerald-300 bg-emerald-50':'border-gray-200 bg-gray-50 hover:border-brand-300 hover:bg-brand-50/30')}>
+          {reading?(
+            <div className="flex flex-col items-center gap-3">
+              <div className="relative w-12 h-12">
+                <div className="absolute inset-0 rounded-full border-4 border-brand-100"/>
+                <div className="absolute inset-0 rounded-full border-4 border-brand-500 border-t-transparent animate-spin"/>
+              </div>
+              <div className="text-sm font-medium text-brand-600 animate-pulse">Reading file…</div>
+            </div>
+          ):rows.length>0?(
+            <div className="flex flex-col items-center gap-1">
+              <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center mb-1"><CheckCircle className="w-5 h-5 text-emerald-600"/></div>
+              <div className="text-sm font-semibold text-emerald-700">{rows.length} rows detected</div>
+              <div className="text-xs text-emerald-600">Click to change file</div>
+            </div>
+          ):(
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center"><Upload className="w-5 h-5 text-gray-400"/></div>
+              <div className="text-sm font-medium text-gray-600">Click to upload CSV</div>
+              <div className="text-xs text-gray-400">Excel: File → Save As → CSV (Comma delimited)</div>
+            </div>
+          )}
+          <input ref={fileRef} type="file" accept=".csv,.txt" onChange={handleFile} className="hidden"/>
+        </label>
       </div>
-      <div><label className="label">Upload CSV</label><input ref={fileRef} type="file" accept=".csv,.txt" onChange={handleFile} className="input"/><div className="text-xs text-gray-400 mt-1">For Excel: Save As → CSV (Comma delimited)</div></div>
-      {error&&<div className="px-3 py-2 rounded-lg bg-red-50 text-red-600 text-sm">{error}</div>}
-      {rows.length>0&&(
+      {error&&<div className="px-3 py-2.5 rounded-lg bg-red-50 text-red-600 text-sm border border-red-100 flex items-start gap-2"><AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5"/>{error}</div>}
+      {rows.length>0&&!reading&&(
         <>
-          <div className="px-3 py-2 rounded-lg bg-emerald-50 text-emerald-700 text-sm border border-emerald-100 font-medium">✓ {rows.length} rows detected — ready to import</div>
           <div className="overflow-x-auto rounded-lg border border-gray-100 text-xs">
+            <div className="px-3 py-2 bg-gray-50 border-b border-gray-100 text-xs text-gray-500 font-medium">Preview — first 3 of {rows.length} rows</div>
             <table className="w-full"><thead><tr>{previewCols.map(c=><th key={c} className="th py-1.5 whitespace-nowrap">{c}</th>)}</tr></thead>
-            <tbody>{rows.slice(0,3).map((row,i)=><tr key={i}>{previewCols.map(c=><td key={c} className="td py-1.5 max-w-[100px] truncate">{row[c]||'—'}</td>)}</tr>)}</tbody></table>
+            <tbody>{rows.slice(0,3).map((row,i)=><tr key={i}>{previewCols.map(c=><td key={c} className="td py-1.5 max-w-[120px] truncate">{row[c]||'—'}</td>)}</tr>)}</tbody></table>
           </div>
-          <button onClick={()=>onImport(rows)} className="btn-primary w-full justify-center"><Upload className="w-4 h-4"/> Import {rows.length} {type}</button>
+          <button onClick={()=>onImport(rows,rawCSV)} className="btn-primary w-full justify-center py-2.5">
+            <Upload className="w-4 h-4"/> Import {rows.length} {type==='payments'?'Payments':type==='staff'?'Staff Members':'Students'}
+          </button>
         </>
       )}
     </div>
   )
 }
+
 
 // ══════════════════════════════════════════════════════════════
 // MAIN SHELL
@@ -164,19 +228,22 @@ export default function DashboardShell({profile}:{profile:Profile}){
   const [fees,setFees]=useState<any[]>([])
   const [payments,setPayments]=useState<any[]>([])
   const [leads,setLeads]=useState<any[]>([])
+  const [packages,setPackages]=useState<any[]>([])
 
   const load=useCallback(async()=>{
-    const [s,p,sub,sch,f,pay,l]=await Promise.all([
-      supabase.from('students').select('*, student_subjects(subject_id)').order('full_name'),
+    const [s,p,sub,sch,f,pay,l,pkg]=await Promise.all([
+      supabase.from('students').select('*, student_subjects(subject_id, package_id, grade_level)').order('full_name'),
       supabase.from('profiles').select('*').order('full_name'),
       supabase.from('subjects').select('*').order('name'),
       supabase.from('class_schedules').select('*, schedule_students(student_id)').order('day_of_week').order('start_time'),
       supabase.from('fee_structures').select('*'),
       supabase.from('payments').select('*, students(full_name,email,phone), subjects(name,code,color)').order('created_at',{ascending:false}),
       supabase.from('leads').select('*').order('created_at',{ascending:false}),
+      supabase.from('subject_packages').select('*, subjects(name,code,color)').order('subject_id').order('grade_level').order('classes_pm'),
     ])
     setStudents(s.data||[]);setProfiles(p.data||[]);setSubjects(sub.data||[])
     setSchedules(sch.data||[]);setFees(f.data||[]);setPayments(pay.data||[]);setLeads(l.data||[])
+    setPackages(pkg.data||[])
   },[])
 
   useEffect(()=>{load()},[load])
@@ -188,6 +255,7 @@ export default function DashboardShell({profile}:{profile:Profile}){
     {id:'leads',icon:UserPlus,label:'Leads',show:perms.manageStudents},
     {id:'teachers',icon:GraduationCap,label:'Teachers',show:perms.manageTeachers},
     {id:'subjects',icon:BookOpen,label:'Subjects',show:perms.manageSubjects},
+    {id:'packages',icon:CreditCard,label:'Packages',show:perms.manageFees},
     {id:'schedule',icon:CalendarDays,label:'Schedule',show:perms.viewOwnSchedule},
     {id:'fees',icon:Coins,label:'Fee Structure',show:perms.manageFees},
     {id:'payments',icon:Receipt,label:'Payments',show:perms.viewPayments},
@@ -220,14 +288,15 @@ export default function DashboardShell({profile}:{profile:Profile}){
       </aside>
       <main className="flex-1 overflow-y-auto bg-gray-50">
         <div className="max-w-6xl mx-auto px-6 py-6">
-          {tab==='home'&&<HomeTab profile={profile} perms={perms} students={students} profiles={profiles} payments={payments} schedules={schedules} subjects={subjects} leads={leads} setTab={setTab}/>}
-          {tab==='students'&&<StudentsTab students={students} subjects={subjects} reload={load}/>}
-          {tab==='leads'&&<LeadsTab leads={leads} subjects={subjects} reload={load}/>}
-          {tab==='teachers'&&<TeachersTab profiles={profiles} subjects={subjects} reload={load}/>}
-          {tab==='subjects'&&<SubjectsTab subjects={subjects} profiles={profiles} students={students} fees={fees} reload={load}/>}
-          {tab==='schedule'&&<ScheduleTab schedules={schedules} subjects={subjects} students={students} profile={profile} perms={perms} reload={load}/>}
-          {tab==='fees'&&<FeesTab subjects={subjects} fees={fees} reload={load}/>}
-          {tab==='payments'&&<PaymentsTab payments={payments} students={students} subjects={subjects} fees={fees} perms={perms} reload={load}/>}
+          {tab==='home'&&<HomeTab profile={profile} perms={perms} students={students} profiles={profiles} payments={payments} schedules={schedules} leads={leads} setTab={setTab}/>}
+          {tab==='students'&&<StudentsTab students={students} reload={load}/>}
+          {tab==='leads'&&<LeadsTab leads={leads} reload={load}/>}
+          {tab==='teachers'&&<TeachersTab profiles={profiles} reload={load}/>}
+          {tab==='subjects'&&<SubjectsTab profiles={profiles} students={students} fees={fees} reload={load}/>}
+          {tab==='packages'&&<PackagesTab packages={packages} reload={load}/>}
+          {tab==='schedule'&&<ScheduleTab schedules={schedules} students={students} profile={profile} perms={perms} reload={load}/>}
+          {tab==='fees'&&<FeesTab fees={fees} reload={load}/>}
+          {tab==='payments'&&<PaymentsTab payments={payments} students={students} fees={fees} perms={perms} reload={load}/>}
           {tab==='users'&&<UsersTab profiles={profiles} profile={profile} reload={load}/>}
         </div>
       </main>
@@ -400,7 +469,7 @@ function StudentsTab({students,subjects,reload}:any){
         </div>
       </Modal>
       <Modal open={importOpen} onClose={()=>setImportOpen(false)} title="Import Students from CSV" wide>
-        <ImportPanel type="students" onImport={handleImport} subjects={subjects}/>
+        <ImportPanel type="students" onImport={handleImport}/>
       </Modal>
     </div>
   )
@@ -470,10 +539,75 @@ function LeadsTab({leads,subjects,reload}:any){
 
 // ══════════════════════════════════════════════════════════════ TEACHERS
 function TeachersTab({profiles,subjects,reload}:any){
-  const teachers=profiles.filter((p:any)=>p.role==='teacher')
-  const [open,setOpen]=useState(false);const [importOpen,setImportOpen]=useState(false)
+  const teachers=profiles.filter((p:any)=>p.role==='teacher'||p.role==='center_manager')
+  const [open,setOpen]=useState(false)
+  const [importOpen,setImportOpen]=useState(false)
+  const [pwdOpen,setPwdOpen]=useState(false)
+  const [pwdUser,setPwdUser]=useState<any>(null)
   const [form,setForm]=useState({full_name:'',email:'',phone:'',password:''})
-  const [busy,setBusy]=useState(false);const [err,setErr]=useState('');const [importResult,setImportResult]=useState('')
+  const [pwdForm,setPwdForm]=useState({password:'',confirm:''})
+  const [showPwd,setShowPwd]=useState(false)
+  const [busy,setBusy]=useState(false)
+  const [err,setErr]=useState('')
+  const [pwdErr,setPwdErr]=useState('')
+  const [pwdSuccess,setPwdSuccess]=useState('')
+  const [importResult,setImportResult]=useState('')
+  const [editOpen,setEditOpen]=useState(false)
+  const [editUser,setEditUser]=useState<any>(null)
+  const [editForm,setEditForm]=useState({full_name:'',email:'',phone:'',staff_role:'',role:'teacher' as Role})
+  const [editErr,setEditErr]=useState('')
+  const [editBusy,setEditBusy]=useState(false)
+
+  function openEditUser(user:any){
+    setEditUser(user)
+    setEditForm({full_name:user.full_name,email:user.email,phone:user.phone||'',staff_role:user.staff_role||'',role:user.role})
+    setEditErr(''); setEditOpen(true)
+  }
+
+  async function saveEditUser(){
+    if(!editForm.full_name||!editForm.email){setEditErr('Name and email are required');return}
+    setEditBusy(true);setEditErr('')
+    const supa=sb()
+    const{error}=await supa.from('profiles').update({
+      full_name:editForm.full_name,
+      email:editForm.email,
+      phone:editForm.phone||null,
+      staff_role:editForm.staff_role||null,
+    }).eq('id',editUser.id)
+    if(error){setEditErr(error.message);setEditBusy(false);return}
+    // Also update role if changed (superadmin only via API)
+    if(editForm.role!==editUser.role){
+      await fetch('/api/admin',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:editUser.id,role:editForm.role})})
+    }
+    setEditBusy(false);setEditOpen(false);reload()
+  }
+
+  function openResetPwd(user:any){
+    setPwdUser(user)
+    setPwdForm({password:'',confirm:''})
+    setPwdErr(''); setPwdSuccess(''); setShowPwd(false)
+    setPwdOpen(true)
+  }
+
+  async function savePassword(){
+    if(!pwdForm.password||pwdForm.password.length<8){setPwdErr('Password must be at least 8 characters');return}
+    if(pwdForm.password!==pwdForm.confirm){setPwdErr('Passwords do not match');return}
+    setBusy(true);setPwdErr('');setPwdSuccess('')
+    const r=await fetch('/api/admin',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:pwdUser.id,password:pwdForm.password})})
+    const d=await r.json()
+    setBusy(false)
+    if(!r.ok){setPwdErr(d.error||'Error updating password');return}
+    setPwdSuccess(`✓ Password updated for ${pwdUser.full_name}`)
+    setPwdForm({password:'',confirm:''})
+  }
+
+  async function generateAndSet(){
+    const chars='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789@#!'
+    const pwd=Array.from({length:10},()=>chars[Math.floor(Math.random()*chars.length)]).join('')
+    setPwdForm({password:pwd,confirm:pwd})
+    setShowPwd(true)
+    setPwdErr(''); setPwdSuccess('')
+  }
 
   async function save(){
     if(!form.full_name||!form.email||!form.password)return setErr('Fill all required fields')
@@ -497,10 +631,14 @@ function TeachersTab({profiles,subjects,reload}:any){
   }
 
   async function del(id:string){if(!confirm('Delete?'))return;await fetch(`/api/admin?id=${id}`,{method:'DELETE'});reload()}
+
+  const roleColor:Record<string,string>={teacher:'bg-emerald-50 text-emerald-700',center_manager:'bg-blue-50 text-blue-700'}
+  const roleLabel:Record<string,string>={teacher:'Teacher',center_manager:'Center Manager'}
+
   return(
     <div className="animate-fu">
       <div className="flex items-center justify-between mb-5">
-        <div><h1 className="text-xl font-semibold text-gray-900">Teachers</h1><p className="text-sm text-gray-400 mt-0.5">{teachers.length} faculty</p></div>
+        <div><h1 className="text-xl font-semibold text-gray-900">Staff</h1><p className="text-sm text-gray-400 mt-0.5">{teachers.length} staff members</p></div>
         <div className="flex gap-2"><button onClick={()=>setImportOpen(true)} className="btn"><Upload className="w-4 h-4"/> Import Staff CSV</button><button onClick={()=>setOpen(true)} className="btn-primary"><Plus className="w-4 h-4"/> Add Teacher</button></div>
       </div>
       {importResult&&<div className="mb-4 px-4 py-2.5 rounded-lg bg-emerald-50 text-emerald-700 text-sm border border-emerald-100">{importResult}</div>}
@@ -508,14 +646,144 @@ function TeachersTab({profiles,subjects,reload}:any){
         {teachers.map((t:any,i:number)=>{
           const tSubs=subjects.filter((s:any)=>s.teacher_id===t.id)
           return(<div key={t.id} className="card p-5 hover:shadow-md transition-shadow">
-            <div className="flex items-start justify-between mb-4"><div className="flex items-center gap-3"><Avatar name={t.full_name} i={i}/><div><div className="font-medium text-gray-900">{t.full_name}</div><span className="badge bg-emerald-50 text-emerald-700 text-xs">{t.staff_role||'Teacher'}</span></div></div><button onClick={()=>del(t.id)} className="btn btn-sm btn-danger"><Trash2 className="w-3 h-3"/></button></div>
-            <div className="text-xs text-gray-400 mb-0.5">{t.email}</div>
-            {t.phone&&<div className="text-xs text-gray-400 mb-3 flex items-center gap-1"><Phone className="w-3 h-3"/>{t.phone}</div>}
-            <div className="flex flex-wrap gap-1">{tSubs.map((s:any)=><span key={s.id} className={clsx('badge',colorBadge[s.color]||colorBadge.violet)}>{s.name}</span>)}{!tSubs.length&&<span className="text-xs text-gray-300">No subjects yet</span>}</div>
+            {/* Header */}
+            <div className="flex items-start justify-between mb-3">
+              <div className="flex items-center gap-3">
+                <Avatar name={t.full_name} i={i}/>
+                <div>
+                  <div className="font-medium text-gray-900">{t.full_name}</div>
+                  <span className={clsx('badge text-xs',roleColor[t.role]||roleColor.teacher)}>{roleLabel[t.role]||'Teacher'}</span>
+                </div>
+              </div>
+              <button onClick={()=>del(t.id)} className="btn btn-sm btn-danger"><Trash2 className="w-3 h-3"/></button>
+            </div>
+            {/* Contact */}
+            <div className="space-y-1 mb-3">
+              <div className="text-xs text-gray-400 flex items-center gap-1.5"><Mail className="w-3 h-3"/>{t.email}</div>
+              {t.phone&&<div className="text-xs text-gray-400 flex items-center gap-1.5"><Phone className="w-3 h-3"/>{t.phone}</div>}
+            </div>
+            {/* Subjects */}
+            <div className="flex flex-wrap gap-1 mb-4">{tSubs.map((s:any)=><span key={s.id} className={clsx('badge',colorBadge[s.color]||colorBadge.violet)}>{s.name}</span>)}{!tSubs.length&&<span className="text-xs text-gray-300">No subjects assigned</span>}</div>
+            {/* Action buttons */}
+            <div className="flex gap-2">
+              <button onClick={()=>openEditUser(t)} className="flex-1 btn btn-sm justify-center text-gray-600 hover:bg-gray-100">
+                <Edit className="w-3.5 h-3.5"/> Edit
+              </button>
+              <button onClick={()=>openResetPwd(t)} className="flex-1 btn btn-sm justify-center text-brand-600 border-brand-200 hover:bg-brand-50">
+                <KeyRound className="w-3.5 h-3.5"/> Password
+              </button>
+            </div>
           </div>)
         })}
-        {!teachers.length&&<div className="col-span-3 text-center py-16 text-gray-300">No teachers yet. Import your staff CSV to get started.</div>}
+        {!teachers.length&&<div className="col-span-3 text-center py-16 text-gray-300">No staff yet. Import your staff CSV to get started.</div>}
       </div>
+
+      {/* Edit Staff Modal */}
+      <Modal open={editOpen} onClose={()=>setEditOpen(false)} title={`Edit — ${editUser?.full_name||''}`}>
+        <div className="space-y-3">
+          {editErr&&<div className="px-3 py-2 rounded-lg bg-red-50 text-red-600 text-sm border border-red-100">{editErr}</div>}
+          <div><label className="label">Full Name *</label><input className="input" value={editForm.full_name} onChange={e=>setEditForm(f=>({...f,full_name:e.target.value}))}/></div>
+          <div><label className="label">Email *</label><input className="input" type="email" value={editForm.email} onChange={e=>setEditForm(f=>({...f,email:e.target.value}))}/></div>
+          <div><label className="label">Phone</label><input className="input" value={editForm.phone} onChange={e=>setEditForm(f=>({...f,phone:e.target.value}))}/></div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label">Staff Role (display)</label>
+              <select className="input" value={editForm.staff_role} onChange={e=>setEditForm(f=>({...f,staff_role:e.target.value}))}>
+                <option value="">— Select —</option>
+                <option>Teacher</option>
+                <option>Administrator</option>
+                <option>Owner</option>
+                <option>Coordinator</option>
+              </select>
+            </div>
+            <div>
+              <label className="label">System Role</label>
+              <select className="input" value={editForm.role} onChange={e=>setEditForm(f=>({...f,role:e.target.value as Role}))}>
+                <option value="teacher">Teacher</option>
+                <option value="center_manager">Center Manager</option>
+                <option value="superadmin">Super Admin</option>
+              </select>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <button className="btn" onClick={()=>setEditOpen(false)}>Cancel</button>
+            <button className="btn-primary" onClick={saveEditUser} disabled={editBusy}>
+              {editBusy?<Loader2 className="w-4 h-4 animate-spin"/>:<Edit className="w-4 h-4"/>}
+              Save Changes
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Password Reset Modal */}
+      <Modal open={pwdOpen} onClose={()=>setPwdOpen(false)} title={`Reset Password — ${pwdUser?.full_name||''}`}>
+        <div className="space-y-4">
+          <div className="bg-gray-50 rounded-xl p-3 text-sm">
+            <div className="text-xs text-gray-400 mb-1">Account</div>
+            <div className="font-medium text-gray-900">{pwdUser?.full_name}</div>
+            <div className="text-xs text-gray-500">{pwdUser?.email}</div>
+          </div>
+
+          {pwdErr&&<div className="px-3 py-2 rounded-lg bg-red-50 text-red-600 text-sm border border-red-100">{pwdErr}</div>}
+          {pwdSuccess&&<div className="px-3 py-2 rounded-lg bg-emerald-50 text-emerald-700 text-sm border border-emerald-100">{pwdSuccess}</div>}
+
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="label mb-0">New Password *</label>
+              <button onClick={generateAndSet} className="text-xs text-brand-500 hover:text-brand-700 flex items-center gap-1">
+                <RefreshCw className="w-3 h-3"/> Generate
+              </button>
+            </div>
+            <div className="relative">
+              <input
+                className="input pr-10"
+                type={showPwd?'text':'password'}
+                value={pwdForm.password}
+                onChange={e=>setPwdForm(f=>({...f,password:e.target.value}))}
+                placeholder="Min 8 characters"
+                autoComplete="new-password"
+              />
+              <button type="button" onClick={()=>setShowPwd(!showPwd)} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                {showPwd?<EyeOff className="w-4 h-4"/>:<Eye className="w-4 h-4"/>}
+              </button>
+            </div>
+            {pwdForm.password&&<div className={clsx('text-xs mt-1',pwdForm.password.length>=8?'text-emerald-600':'text-red-400')}>{pwdForm.password.length>=8?'✓ Strong enough':'Too short — need at least 8 characters'}</div>}
+          </div>
+
+          <div>
+            <label className="label">Confirm Password *</label>
+            <input
+              className={clsx('input',pwdForm.confirm&&pwdForm.confirm!==pwdForm.password?'border-red-300':'')}
+              type={showPwd?'text':'password'}
+              value={pwdForm.confirm}
+              onChange={e=>setPwdForm(f=>({...f,confirm:e.target.value}))}
+              placeholder="Re-enter password"
+              autoComplete="new-password"
+            />
+            {pwdForm.confirm&&pwdForm.confirm!==pwdForm.password&&<div className="text-xs text-red-400 mt-1">Passwords do not match</div>}
+            {pwdForm.confirm&&pwdForm.confirm===pwdForm.password&&pwdForm.password.length>=8&&<div className="text-xs text-emerald-600 mt-1">✓ Passwords match</div>}
+          </div>
+
+          {showPwd&&pwdForm.password&&(
+            <div className="bg-amber-50 border border-amber-100 rounded-lg px-3 py-2.5 text-xs text-amber-700">
+              <strong>Remember to share this password</strong> with {pwdUser?.full_name} securely — via WhatsApp or in person. They should change it after first login.
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2 pt-2">
+            <button className="btn" onClick={()=>setPwdOpen(false)}>Close</button>
+            <button
+              className="btn-primary"
+              onClick={savePassword}
+              disabled={busy||!pwdForm.password||pwdForm.password!==pwdForm.confirm||pwdForm.password.length<8}
+            >
+              {busy?<Loader2 className="w-4 h-4 animate-spin"/>:<KeyRound className="w-4 h-4"/>}
+              {busy?'Updating…':'Set Password'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
       <Modal open={open} onClose={()=>setOpen(false)} title="Add Teacher">
         <div className="space-y-3">
           {err&&<div className="px-3 py-2 rounded-lg bg-red-50 text-red-600 text-sm">{err}</div>}
@@ -761,20 +1029,29 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
     setBusy(false);setOpen(false);reload()
   }
 
-  async function handleImport(rows:any[]){
-    setBusy(true);let ok=0,fail=0,skip=0
-    for(const row of rows){
-      const mapped=mapPayment(row)
-      if(!mapped.amount||mapped.amount<=0){skip++;continue}
-      // Try to match student by student_id_ext or email
-      let studentId=null
-      if(mapped.student_id_ext){const{data:s}=await supabase.from('students').select('id').eq('student_id_ext',mapped.student_id_ext).single();studentId=s?.id}
-      if(!studentId&&mapped.student_email){const{data:s}=await supabase.from('students').select('id').eq('email',mapped.student_email).single();studentId=s?.id}
-      const payload={...mapped,student_id:studentId||null}
-      const{error}=await supabase.from('payments').insert(payload)
-      if(error){console.error(mapped.student_name,error.message);fail++}else ok++
+  async function handleImport(_rows:any[], rawText?:string){
+    if(!rawText){setImportResult('Error: could not read file text');return}
+    setBusy(true)
+    setImportResult('⏳ Uploading… please wait')
+    try{
+      const r=await fetch('/api/import',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({type:'payments',csvText:rawText})
+      })
+      const d=await r.json()
+      if(!r.ok){setImportResult(`Error: ${d.error||'Server error'}`);setBusy(false);return}
+      let msg=`✓ ${d.inserted} payments imported`
+      if(d.failed>0) msg+=` · ${d.failed} failed`
+      if(d.skipped>0) msg+=` · ${d.skipped} skipped (₹0 amount)`
+      if(d.firstError) msg+=` — Error: "${d.firstError}"`
+      setImportResult(msg)
+      setImportOpen(false)
+      reload()
+    }catch(e:any){
+      setImportResult(`Network error: ${e.message}`)
     }
-    setBusy(false);setImportResult(`✓ ${ok} payments imported${fail>0?`, ${fail} failed`:''}${skip>0?`, ${skip} skipped`:''}`);setImportOpen(false);reload()
+    setBusy(false)
   }
 
   async function sendPaymentReminder(p:any){
@@ -794,7 +1071,14 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
           {perms.managePayments&&<button onClick={()=>setOpen(true)} className="btn-primary"><Plus className="w-4 h-4"/> Record</button>}
         </div>
       </div>
-      {importResult&&<div className="mb-4 px-4 py-2.5 rounded-lg bg-emerald-50 text-emerald-700 text-sm border border-emerald-100">{importResult}</div>}
+      {importResult&&<div className={clsx('mb-4 px-4 py-2.5 rounded-lg text-sm border flex items-center gap-2',
+        importResult.startsWith('⏳')?'bg-brand-50 text-brand-700 border-brand-100':
+        importResult.startsWith('Error')||importResult.includes('failed')?'bg-red-50 text-red-700 border-red-100':
+        'bg-emerald-50 text-emerald-700 border-emerald-100'
+      )}>
+        {importResult.startsWith('⏳')&&<Loader2 className="w-4 h-4 animate-spin flex-shrink-0"/>}
+        {importResult}
+      </div>}
       <div className="grid grid-cols-4 gap-4 mb-5">
         <div className="card p-4 bg-emerald-50 border-emerald-100"><div className="text-xs text-emerald-600 mb-1">Collected</div><div className="text-xl font-semibold text-emerald-700">{fmt(paid)}</div></div>
         <div className="card p-4 bg-amber-50 border-amber-100"><div className="text-xs text-amber-600 mb-1">Pending</div><div className="text-xl font-semibold text-amber-700">{fmt(pending)}</div></div>
@@ -919,6 +1203,266 @@ function UsersTab({profiles,profile:self,reload}:any){
           <div><label className="label">Role *</label><select className="input" value={form.role} onChange={e=>setForm(f=>({...f,role:e.target.value as Role}))}><option value="superadmin">Super Admin</option><option value="center_manager">Center Manager</option><option value="teacher">Teacher</option></select></div>
           <div><label className="label">Password *</label><input className="input" type="password" value={form.password} onChange={e=>setForm(f=>({...f,password:e.target.value}))} placeholder="Min 8 chars"/></div>
           <div className="flex justify-end gap-2 pt-2"><button className="btn" onClick={()=>setOpen(false)}>Cancel</button><button className="btn-primary" onClick={save} disabled={busy}>{busy?<Loader2 className="w-4 h-4 animate-spin"/>:null}Create User</button></div>
+        </div>
+      </Modal>
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════
+// PACKAGES TAB
+// ══════════════════════════════════════════════════════════════
+const GRADE_LEVELS = ['Beginner–Grade 2', 'Grade 3–5', 'Grade 6–8']
+const CLASSES_PM_OPTIONS = [4, 8, 12]
+
+function PackagesTab({ packages, subjects, reload }: any) {
+  const supabase = sb()
+  const [open, setOpen] = useState(false)
+  const [editing, setEditing] = useState<any>(null)
+  const [filterSubject, setFilterSubject] = useState('all')
+  const [busy, setBusy] = useState(false)
+  const [form, setForm] = useState({
+    subject_id: '', name: '', classes_pm: 4, grade_level: 'Beginner–Grade 2',
+    price: '', duration_min: 45, description: '', is_active: true
+  })
+
+  const openAdd = (subjectId?: string, grade?: string) => {
+    setEditing(null)
+    setForm({ subject_id: subjectId||'', name: '4 Classes / Month', classes_pm: 4, grade_level: grade||'Beginner–Grade 2', price: '', duration_min: 45, description: '', is_active: true })
+    setOpen(true)
+  }
+
+  const openEdit = (pkg: any) => {
+    setEditing(pkg)
+    setForm({ subject_id: pkg.subject_id, name: pkg.name, classes_pm: pkg.classes_pm, grade_level: pkg.grade_level, price: String(pkg.price), duration_min: pkg.duration_min, description: pkg.description||'', is_active: pkg.is_active })
+    setOpen(true)
+  }
+
+  async function save() {
+    if (!form.subject_id || !form.price) return
+    setBusy(true)
+    const payload = {
+      subject_id: form.subject_id, name: form.name, classes_pm: form.classes_pm,
+      grade_level: form.grade_level, price: parseInt(form.price), duration_min: form.duration_min,
+      description: form.description || null, is_active: form.is_active
+    }
+    if (editing) await supabase.from('subject_packages').update(payload).eq('id', editing.id)
+    else await supabase.from('subject_packages').insert(payload)
+    setBusy(false); setOpen(false); reload()
+  }
+
+  async function toggleActive(pkg: any) {
+    await supabase.from('subject_packages').update({ is_active: !pkg.is_active }).eq('id', pkg.id)
+    reload()
+  }
+
+  async function del(id: string) {
+    if (!confirm('Delete this package?')) return
+    await supabase.from('subject_packages').delete().eq('id', id)
+    reload()
+  }
+
+  const filtered = filterSubject === 'all' ? packages : packages.filter((p: any) => p.subject_id === filterSubject)
+
+  // Group by subject → grade level
+  const grouped: Record<string, Record<string, any[]>> = {}
+  filtered.forEach((pkg: any) => {
+    const subName = pkg.subjects?.name || pkg.subject_id
+    if (!grouped[subName]) grouped[subName] = {}
+    if (!grouped[subName][pkg.grade_level]) grouped[subName][pkg.grade_level] = []
+    grouped[subName][pkg.grade_level].push(pkg)
+  })
+
+  const gradeColor: Record<string, string> = {
+    'Beginner–Grade 2': 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    'Grade 3–5':        'bg-blue-50 text-blue-700 border-blue-200',
+    'Grade 6–8':        'bg-purple-50 text-purple-700 border-purple-200',
+  }
+
+  const classesColor: Record<number, string> = {
+    4:  'bg-amber-50 text-amber-700',
+    8:  'bg-brand-50 text-brand-700',
+    12: 'bg-rose-50 text-rose-700',
+  }
+
+  return (
+    <div className="animate-fu">
+      <div className="flex items-center justify-between mb-5">
+        <div>
+          <h1 className="text-xl font-semibold text-gray-900">Packages</h1>
+          <p className="text-sm text-gray-400 mt-0.5">{packages.length} packages across {subjects.length} subjects</p>
+        </div>
+        <button onClick={() => openAdd()} className="btn-primary"><Plus className="w-4 h-4"/> Add Package</button>
+      </div>
+
+      {/* Summary cards */}
+      <div className="grid grid-cols-3 gap-4 mb-6">
+        {GRADE_LEVELS.map(gl => {
+          const glPkgs = packages.filter((p: any) => p.grade_level === gl && p.is_active)
+          const minPrice = glPkgs.length ? Math.min(...glPkgs.map((p: any) => p.price)) : 0
+          const maxPrice = glPkgs.length ? Math.max(...glPkgs.map((p: any) => p.price)) : 0
+          return (
+            <div key={gl} className={clsx('card p-4 border', gradeColor[gl])}>
+              <div className="text-xs font-semibold mb-2">{gl}</div>
+              <div className="text-2xl font-bold">{glPkgs.length}</div>
+              <div className="text-xs opacity-70 mt-0.5">active packages</div>
+              {minPrice > 0 && <div className="text-xs mt-2 font-medium">{fmt(minPrice)} – {fmt(maxPrice)}/mo</div>}
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Filter */}
+      <div className="flex gap-2 mb-5 flex-wrap">
+        <button onClick={() => setFilterSubject('all')} className={clsx('btn btn-sm', filterSubject==='all'&&'btn-primary')}>All Subjects</button>
+        {subjects.map((s: any) => (
+          <button key={s.id} onClick={() => setFilterSubject(s.id)} className={clsx('btn btn-sm', filterSubject===s.id&&'btn-primary')}>
+            {s.name}
+          </button>
+        ))}
+      </div>
+
+      {/* Grouped view: Subject → Grade Level → Packages */}
+      <div className="space-y-6">
+        {Object.entries(grouped).map(([subName, grades]) => {
+          const sub = subjects.find((s: any) => s.name === subName)
+          return (
+            <div key={subName} className="card overflow-hidden">
+              {/* Subject header */}
+              <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 bg-gray-50/60">
+                <div className="flex items-center gap-3">
+                  <span className={clsx('badge text-sm font-semibold', colorBadge[sub?.color]||colorBadge.violet)}>
+                    {sub?.code || subName.slice(0,3).toUpperCase()}
+                  </span>
+                  <span className="font-semibold text-gray-900">{subName}</span>
+                </div>
+                <button onClick={() => openAdd(sub?.id)} className="btn btn-sm">
+                  <Plus className="w-3 h-3"/> Add Package
+                </button>
+              </div>
+
+              {/* Grade level sections */}
+              {GRADE_LEVELS.map(grade => {
+                const gradePkgs = (grades[grade] || []).sort((a: any, b: any) => a.classes_pm - b.classes_pm)
+                if (!gradePkgs.length && filterSubject !== 'all') return null
+                return (
+                  <div key={grade} className="border-b border-gray-100 last:border-0">
+                    <div className="flex items-center justify-between px-5 py-2.5 bg-white">
+                      <span className={clsx('badge border text-xs', gradeColor[grade])}>{grade}</span>
+                      <button onClick={() => openAdd(sub?.id, grade)} className="text-xs text-brand-500 hover:text-brand-700 flex items-center gap-1">
+                        <Plus className="w-3 h-3"/> Add
+                      </button>
+                    </div>
+                    {gradePkgs.length === 0 ? (
+                      <div className="px-5 pb-3 text-xs text-gray-300">No packages — click Add above</div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 px-5 pb-4">
+                        {gradePkgs.map((pkg: any) => (
+                          <div key={pkg.id} className={clsx('rounded-xl border p-4 transition-all', pkg.is_active ? 'border-gray-100 bg-white hover:shadow-md' : 'border-dashed border-gray-200 bg-gray-50 opacity-60')}>
+                            <div className="flex items-start justify-between mb-3">
+                              <div>
+                                <span className={clsx('badge text-xs font-semibold', classesColor[pkg.classes_pm]||classesColor[4])}>
+                                  {pkg.classes_pm} classes/mo
+                                </span>
+                                {!pkg.is_active && <span className="ml-1 badge bg-gray-100 text-gray-400 text-xs">Inactive</span>}
+                              </div>
+                              <div className="flex gap-1">
+                                <button onClick={() => openEdit(pkg)} className="w-6 h-6 flex items-center justify-center rounded text-gray-400 hover:bg-gray-100"><Edit className="w-3 h-3"/></button>
+                                <button onClick={() => del(pkg.id)} className="w-6 h-6 flex items-center justify-center rounded text-gray-300 hover:bg-red-50 hover:text-red-500"><Trash2 className="w-3 h-3"/></button>
+                              </div>
+                            </div>
+                            <div className="text-2xl font-bold text-gray-900 mb-0.5">{fmt(pkg.price)}</div>
+                            <div className="text-xs text-gray-400">per month</div>
+                            <div className="mt-3 pt-3 border-t border-gray-100 space-y-1 text-xs text-gray-500">
+                              <div className="flex justify-between"><span>Duration</span><span className="font-medium">{pkg.duration_min} min/class</span></div>
+                              <div className="flex justify-between"><span>Per class</span><span className="font-medium">{fmt(Math.round(pkg.price / pkg.classes_pm))}</span></div>
+                            </div>
+                            {pkg.description && <div className="mt-2 text-xs text-gray-400 italic">{pkg.description}</div>}
+                            <button onClick={() => toggleActive(pkg)} className={clsx('mt-3 w-full text-xs py-1.5 rounded-lg border transition-colors', pkg.is_active ? 'border-gray-200 text-gray-400 hover:bg-red-50 hover:text-red-500 hover:border-red-100' : 'border-emerald-200 text-emerald-600 hover:bg-emerald-50')}>
+                              {pkg.is_active ? 'Deactivate' : 'Activate'}
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )
+        })}
+        {Object.keys(grouped).length === 0 && (
+          <div className="card p-16 text-center text-gray-300">
+            <BookOpen className="w-12 h-12 mx-auto mb-3 opacity-30"/>
+            <p>No packages yet. Run the SQL migration first, then refresh.</p>
+          </div>
+        )}
+      </div>
+
+      {/* Add/Edit Modal */}
+      <Modal open={open} onClose={() => setOpen(false)} title={editing ? 'Edit Package' : 'Add Package'}>
+        <div className="space-y-4">
+          <div>
+            <label className="label">Subject *</label>
+            <select className="input" value={form.subject_id} onChange={e => setForm(f => ({ ...f, subject_id: e.target.value }))}>
+              <option value="">— Select subject —</option>
+              {subjects.map((s: any) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </div>
+
+          <div>
+            <label className="label">Grade Level *</label>
+            <select className="input" value={form.grade_level} onChange={e => setForm(f => ({ ...f, grade_level: e.target.value }))}>
+              {GRADE_LEVELS.map(g => <option key={g}>{g}</option>)}
+            </select>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label">Classes per Month *</label>
+              <select className="input" value={form.classes_pm} onChange={e => {
+                const n = parseInt(e.target.value)
+                setForm(f => ({ ...f, classes_pm: n, name: `${n} Classes / Month` }))
+              }}>
+                {CLASSES_PM_OPTIONS.map(n => <option key={n} value={n}>{n} classes/month</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="label">Duration per Class (min)</label>
+              <input className="input" type="number" min={30} step={15} value={form.duration_min} onChange={e => setForm(f => ({ ...f, duration_min: parseInt(e.target.value) }))} />
+            </div>
+          </div>
+
+          <div>
+            <label className="label">Monthly Price (₹) *</label>
+            <input className="input text-lg font-semibold" type="number" min={1} step={100} value={form.price} onChange={e => setForm(f => ({ ...f, price: e.target.value }))} placeholder="e.g. 2200" autoFocus />
+            {form.price && form.classes_pm ? (
+              <div className="text-xs text-gray-400 mt-1">= {fmt(Math.round(parseInt(form.price||'0') / form.classes_pm))} per class</div>
+            ) : null}
+          </div>
+
+          <div>
+            <label className="label">Package Name</label>
+            <input className="input" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. 4 Classes / Month" />
+          </div>
+
+          <div>
+            <label className="label">Description (optional)</label>
+            <input className="input" value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="e.g. 1 class/week · 45 min · Includes theory" />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <input type="checkbox" id="pkg-active" checked={form.is_active} onChange={e => setForm(f => ({ ...f, is_active: e.target.checked }))} className="rounded border-gray-300" />
+            <label htmlFor="pkg-active" className="text-sm text-gray-700 cursor-pointer">Active (visible to students)</label>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <button className="btn" onClick={() => setOpen(false)}>Cancel</button>
+            <button className="btn-primary" onClick={save} disabled={busy}>
+              {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+              {editing ? 'Save Changes' : 'Add Package'}
+            </button>
+          </div>
         </div>
       </Modal>
     </div>
