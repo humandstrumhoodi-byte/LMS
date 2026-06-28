@@ -1580,18 +1580,18 @@ function PackagesTab({ packages, subjects, reload }: any) {
   const [busy, setBusy] = useState(false)
   const [form, setForm] = useState({
     subject_id: '', name: '', classes_pm: 4, grade_level: 'Beginner–Grade 2',
-    price: '', duration_min: 45, description: '', is_active: true
+    price: '', duration_min: 45, description: '', is_active: true, months: 1
   })
 
   const openAdd = (subjectId?: string, grade?: string) => {
     setEditing(null)
-    setForm({ subject_id: subjectId||'', name: '4 Classes / Month', classes_pm: 4, grade_level: grade||'Beginner–Grade 2', price: '', duration_min: 45, description: '', is_active: true })
+    setForm({ subject_id: subjectId||'', name: '4 Classes / Month', classes_pm: 4, grade_level: grade||'Beginner–Grade 2', price: '', duration_min: 45, description: '', is_active: true, months: 1 })
     setOpen(true)
   }
 
   const openEdit = (pkg: any) => {
     setEditing(pkg)
-    setForm({ subject_id: pkg.subject_id, name: pkg.name, classes_pm: pkg.classes_pm, grade_level: pkg.grade_level, price: String(pkg.price), duration_min: pkg.duration_min, description: pkg.description||'', is_active: pkg.is_active })
+    setForm({ subject_id: pkg.subject_id, name: pkg.name, classes_pm: pkg.classes_pm, grade_level: pkg.grade_level, price: String(pkg.price), duration_min: pkg.duration_min, description: pkg.description||'', is_active: pkg.is_active, months: pkg.months||1 })
     setOpen(true)
   }
 
@@ -1601,7 +1601,7 @@ function PackagesTab({ packages, subjects, reload }: any) {
     const payload = {
       subject_id: form.subject_id, name: form.name, classes_pm: form.classes_pm,
       grade_level: form.grade_level, price: parseInt(form.price), duration_min: form.duration_min,
-      description: form.description || null, is_active: form.is_active
+      description: form.description || null, is_active: form.is_active, months: form.months || 1
     }
     if (editing) await supabase.from('subject_packages').update(payload).eq('id', editing.id)
     else await supabase.from('subject_packages').insert(payload)
@@ -1717,11 +1717,16 @@ function PackagesTab({ packages, subjects, reload }: any) {
                         {gradePkgs.map((pkg: any) => (
                           <div key={pkg.id} className={clsx('rounded-xl border p-4 transition-all', pkg.is_active ? 'border-gray-100 bg-white hover:shadow-md' : 'border-dashed border-gray-200 bg-gray-50 opacity-60')}>
                             <div className="flex items-start justify-between mb-3">
-                              <div>
+                              <div className="flex flex-wrap gap-1">
                                 <span className={clsx('badge text-xs font-semibold', classesColor[pkg.classes_pm]||classesColor[4])}>
                                   {pkg.classes_pm} classes/mo
                                 </span>
-                                {!pkg.is_active && <span className="ml-1 badge bg-gray-100 text-gray-400 text-xs">Inactive</span>}
+                                {(pkg.months||1) > 1 && (
+                                  <span className={clsx('badge text-xs font-semibold', (pkg.months||1)===6?'bg-rose-50 text-rose-700':'bg-teal-50 text-teal-700')}>
+                                    {pkg.months} months
+                                  </span>
+                                )}
+                                {!pkg.is_active && <span className="badge bg-gray-100 text-gray-400 text-xs">Inactive</span>}
                               </div>
                               <div className="flex gap-1">
                                 <button onClick={() => openEdit(pkg)} className="w-6 h-6 flex items-center justify-center rounded text-gray-400 hover:bg-gray-100"><Edit className="w-3 h-3"/></button>
@@ -1729,12 +1734,20 @@ function PackagesTab({ packages, subjects, reload }: any) {
                               </div>
                             </div>
                             <div className="text-2xl font-bold text-gray-900 mb-0.5">{fmt(pkg.price)}</div>
-                            <div className="text-xs text-gray-400">per month</div>
+                            <div className="text-xs text-gray-400">{(pkg.months||1)>1 ? `total for ${pkg.months} months` : 'per month'}</div>
+                            {(pkg.months||1) > 1 && (
+                              <div className="mt-1 flex items-center gap-1.5">
+                                <span className="text-sm font-semibold text-emerald-600">{fmt(Math.round(pkg.price/(pkg.months||1)))}/mo</span>
+                                <span className={clsx('badge text-xs font-bold', (pkg.months||1)===6?'bg-rose-50 text-rose-700':'bg-teal-50 text-teal-700')}>
+                                  {(pkg.months||1)===6?'15% off':'10% off'}
+                                </span>
+                              </div>
+                            )}
                             <div className="mt-3 pt-3 border-t border-gray-100 space-y-1 text-xs text-gray-500">
                               <div className="flex justify-between"><span>Duration</span><span className="font-medium">{pkg.duration_min} min/class</span></div>
-                              <div className="flex justify-between"><span>Per class</span><span className="font-medium">{fmt(Math.round(pkg.price / pkg.classes_pm))}</span></div>
+                              <div className="flex justify-between"><span>Per class</span><span className="font-medium">{fmt(Math.round(pkg.price / (pkg.classes_pm * (pkg.months||1))))}</span></div>
+                              {(pkg.months||1)>1 && <div className="flex justify-between"><span>Total classes</span><span className="font-medium">{pkg.classes_pm * (pkg.months||1)}</span></div>}
                             </div>
-                            {pkg.description && <div className="mt-2 text-xs text-gray-400 italic">{pkg.description}</div>}
                             <button onClick={() => toggleActive(pkg)} className={clsx('mt-3 w-full text-xs py-1.5 rounded-lg border transition-colors', pkg.is_active ? 'border-gray-200 text-gray-400 hover:bg-red-50 hover:text-red-500 hover:border-red-100' : 'border-emerald-200 text-emerald-600 hover:bg-emerald-50')}>
                               {pkg.is_active ? 'Deactivate' : 'Activate'}
                             </button>
@@ -1791,10 +1804,34 @@ function PackagesTab({ packages, subjects, reload }: any) {
           </div>
 
           <div>
-            <label className="label">Monthly Price (₹) *</label>
-            <input className="input text-lg font-semibold" type="number" min={1} step={100} value={form.price} onChange={e => setForm(f => ({ ...f, price: e.target.value }))} placeholder="e.g. 2200" autoFocus />
+            <label className="label">Duration (months)</label>
+            <div className="flex gap-2">
+              {[1,3,6].map(m => (
+                <button key={m} type="button"
+                  onClick={() => setForm((f:any) => ({
+                    ...f,
+                    months: m,
+                    name: `${f.classes_pm} Classes / Month${m>1?` · ${m} Months`:''}`
+                  }))}
+                  className={clsx('flex-1 py-2 rounded-lg border text-sm font-medium transition-all',
+                    (form.months||1)===m
+                      ? 'border-brand-500 bg-brand-50 text-brand-700'
+                      : 'border-gray-200 text-gray-500 hover:border-gray-300'
+                  )}>
+                  {m} mo{m>1?<span className="ml-1 text-xs opacity-60">{m===3?'10% off':'15% off'}</span>:null}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="label">{(form.months||1)>1?`Total Price (₹) for ${form.months} months *`:'Monthly Price (₹) *'}</label>
+            <input className="input text-lg font-semibold" type="number" min={1} step={100} value={form.price} onChange={e => setForm((f:any) => ({ ...f, price: e.target.value }))} placeholder="e.g. 2200" autoFocus />
             {form.price && form.classes_pm ? (
-              <div className="text-xs text-gray-400 mt-1">= {fmt(Math.round(parseInt(form.price||'0') / form.classes_pm))} per class</div>
+              <div className="text-xs text-gray-400 mt-1 space-y-0.5">
+                <div>= {fmt(Math.round(parseInt(form.price||'0') / form.classes_pm / (form.months||1)))} per class</div>
+                {(form.months||1)>1 && <div className="text-emerald-600">= {fmt(Math.round(parseInt(form.price||'0') / (form.months||1)))} per month</div>}
+              </div>
             ) : null}
           </div>
 
