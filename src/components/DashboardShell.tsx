@@ -19,6 +19,20 @@ const ac = (i:number) => avatarColors[i%avatarColors.length]
 const colorBadge:Record<string,string> = { violet:'bg-violet-50 text-violet-700', sky:'bg-sky-50 text-sky-700', emerald:'bg-emerald-50 text-emerald-700', amber:'bg-amber-50 text-amber-700', rose:'bg-rose-50 text-rose-700', indigo:'bg-indigo-50 text-indigo-700' }
 const colorCell:Record<string,string> = { violet:'bg-violet-100 text-violet-700 border border-violet-200', sky:'bg-sky-100 text-sky-700 border border-sky-200', emerald:'bg-emerald-100 text-emerald-700 border border-emerald-200', amber:'bg-amber-100 text-amber-700 border border-amber-200', rose:'bg-rose-100 text-rose-700 border border-rose-200', indigo:'bg-indigo-100 text-indigo-700 border border-indigo-200' }
 const PAY_MODES = ['UPI','Cash','Credit / Debit Card','Payment gateway','Cheque','Bank Transfer','Other']
+
+const STUDENT_STATUSES = [
+  { value: 'Active',          label: 'Active',           color: 'bg-emerald-50 text-emerald-700 border-emerald-200',  dot: 'bg-emerald-500' },
+  { value: 'Trial',           label: 'Trial',            color: 'bg-amber-50 text-amber-700 border-amber-200',        dot: 'bg-amber-400' },
+  { value: 'Paid Break',      label: 'Paid Break',       color: 'bg-blue-50 text-blue-700 border-blue-200',           dot: 'bg-blue-400' },
+  { value: 'Unpaid Break',    label: 'Unpaid Break',     color: 'bg-orange-50 text-orange-700 border-orange-200',     dot: 'bg-orange-400' },
+  { value: 'Inactive',        label: 'Inactive',         color: 'bg-gray-100 text-gray-500 border-gray-200',          dot: 'bg-gray-400' },
+  { value: 'Blocked',         label: 'Blocked',          color: 'bg-red-50 text-red-700 border-red-200',              dot: 'bg-red-500' },
+  { value: 'Dropped Off',     label: 'Dropped Off',      color: 'bg-slate-100 text-slate-500 border-slate-200',       dot: 'bg-slate-400' },
+] as const
+
+function studentStatusStyle(status: string) {
+  return STUDENT_STATUSES.find(s => s.value === status) || STUDENT_STATUSES[0]
+}
 const PAY_STATUSES = ['paid','pending','overdue','failed']
 const LEAD_STATUSES = ['New','Contacted','Interested','Trial Scheduled','Converted','Lost']
 const leadColor:Record<string,string> = { 'New':'bg-blue-50 text-blue-700','Contacted':'bg-purple-50 text-purple-700','Interested':'bg-amber-50 text-amber-700','Trial Scheduled':'bg-orange-50 text-orange-700','Converted':'bg-emerald-50 text-emerald-700','Lost':'bg-red-50 text-red-700' }
@@ -356,6 +370,10 @@ function HomeTab({profile,perms,students,profiles,payments,schedules,subjects,le
   const activeStudents=students.filter((s:any)=>s.status==='Active'||!s.status)
   const inactiveStudents=students.filter((s:any)=>s.status==='Inactive')
   const trialStudents=students.filter((s:any)=>s.status==='Trial')
+  const blockedStudents=students.filter((s:any)=>s.status==='Blocked')
+  const paidBreakStudents=students.filter((s:any)=>s.status==='Paid Break')
+  const unpaidBreakStudents=students.filter((s:any)=>s.status==='Unpaid Break')
+  const droppedStudents=students.filter((s:any)=>s.status==='Dropped Off')
   const paid=payments.filter((p:any)=>p.status==='paid').reduce((a:number,p:any)=>a+p.amount,0)
   const pending=payments.filter((p:any)=>p.status==='pending'||p.status==='overdue').reduce((a:number,p:any)=>a+p.amount,0)
   const overdue=payments.filter((p:any)=>p.status==='overdue')
@@ -420,36 +438,47 @@ function HomeTab({profile,perms,students,profiles,payments,schedules,subjects,le
 
       {!isTeacher&&(<>
         {/* ── Student status breakdown ── */}
-        <div className="grid grid-cols-3 gap-3 mb-4">
-          <button onClick={()=>setDrilldown({title:'Active Students',list:activeStudents})}
-            className="card p-4 text-left hover:shadow-md transition-all hover:border-emerald-200 group">
-            <div className="flex items-center justify-between mb-2">
-              <div className="w-8 h-8 rounded-lg bg-emerald-50 flex items-center justify-center"><Users className="w-4 h-4 text-emerald-600"/></div>
-              <ChevronRight className="w-4 h-4 text-gray-300 group-hover:text-emerald-500 transition-colors"/>
-            </div>
-            <div className="text-2xl font-bold text-gray-900">{activeStudents.length}</div>
-            <div className="text-xs text-gray-400 mt-0.5">Active Students</div>
-          </button>
-
-          <button onClick={()=>setDrilldown({title:'Inactive Students',list:inactiveStudents})}
-            className="card p-4 text-left hover:shadow-md transition-all hover:border-gray-300 group">
-            <div className="flex items-center justify-between mb-2">
-              <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center"><Users className="w-4 h-4 text-gray-400"/></div>
-              <ChevronRight className="w-4 h-4 text-gray-300 group-hover:text-gray-500 transition-colors"/>
-            </div>
-            <div className="text-2xl font-bold text-gray-900">{inactiveStudents.length}</div>
-            <div className="text-xs text-gray-400 mt-0.5">Inactive Students</div>
-          </button>
-
-          <button onClick={()=>setDrilldown({title:'Trial Students',list:trialStudents})}
-            className="card p-4 text-left hover:shadow-md transition-all hover:border-amber-200 group">
-            <div className="flex items-center justify-between mb-2">
-              <div className="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center"><Users className="w-4 h-4 text-amber-500"/></div>
-              <ChevronRight className="w-4 h-4 text-gray-300 group-hover:text-amber-500 transition-colors"/>
-            </div>
-            <div className="text-2xl font-bold text-gray-900">{trialStudents.length}</div>
-            <div className="text-xs text-gray-400 mt-0.5">Trial Students</div>
-          </button>
+        <div className="card p-4 mb-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Students by Status</div>
+            <div className="text-xs text-gray-400">Total: {students.length}</div>
+          </div>
+          <div className="grid grid-cols-4 gap-2">
+            {[
+              {label:'Active',       list:activeStudents,      color:'emerald'},
+              {label:'Trial',        list:trialStudents,       color:'amber'},
+              {label:'Paid Break',   list:paidBreakStudents,   color:'blue'},
+              {label:'Unpaid Break', list:unpaidBreakStudents, color:'orange'},
+              {label:'Inactive',     list:inactiveStudents,    color:'gray'},
+              {label:'Blocked',      list:blockedStudents,     color:'red'},
+              {label:'Dropped Off',  list:droppedStudents,     color:'slate'},
+            ].map(({label,list,color})=>{
+              const st = studentStatusStyle(label)
+              return(
+                <button key={label}
+                  onClick={()=>list.length>0&&setDrilldown({title:`${label} Students`,list})}
+                  className={clsx('flex flex-col p-3 rounded-xl border transition-all text-left',
+                    list.length>0?'cursor-pointer hover:shadow-sm':'cursor-default opacity-50',
+                    st.color
+                  )}>
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <div className={clsx('w-2 h-2 rounded-full',st.dot)}/>
+                    <div className="text-xs font-medium truncate">{label}</div>
+                  </div>
+                  <div className="text-2xl font-bold">{list.length}</div>
+                </button>
+              )
+            })}
+            {/* Total card */}
+            <button onClick={()=>setDrilldown({title:'All Students',list:students})}
+              className="flex flex-col p-3 rounded-xl border border-brand-200 bg-brand-50 transition-all hover:shadow-sm cursor-pointer text-left">
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <div className="w-2 h-2 rounded-full bg-brand-500"/>
+                <div className="text-xs font-medium text-brand-700">All</div>
+              </div>
+              <div className="text-2xl font-bold text-brand-700">{students.length}</div>
+            </button>
+          </div>
         </div>
 
         {/* ── Other quick stats ── */}
@@ -580,16 +609,25 @@ function StudentsTab({students,subjects,packages,fees,reload}:any){
             <tbody>
               {filtered.map((s:any,i:number)=>{
                 const subs=subjects.filter((sub:any)=>(s.student_subjects||[]).some((ss:any)=>ss.subject_id===sub.id))
-                const statusColor=s.status==='Active'?'bg-emerald-50 text-emerald-700':'bg-gray-100 text-gray-500'
+                const st=studentStatusStyle(s.status||'Active')
                 return(<tr key={s.id} className="hover:bg-gray-50/50">
                   <td className="td"><div className="flex items-center gap-3"><Avatar name={s.full_name} i={i}/><div><div className="font-medium text-gray-900">{s.full_name}</div><div className="text-xs text-gray-400">{s.email}</div></div></div></td>
                   <td className="td text-gray-500">{s.phone||'—'}</td>
                   <td className="td"><div className="flex flex-wrap gap-1">{subs.map((sub:any)=><span key={sub.id} className={clsx('badge',colorBadge[sub.color]||colorBadge.violet)}>{sub.name}</span>)}</div></td>
-                  <td className="td"><span className={clsx('badge',statusColor)}>{s.status||'Active'}</span></td>
+                  <td className="td"><span className={clsx('badge border',st.color)}><span className={clsx('w-1.5 h-1.5 rounded-full mr-1 inline-block',st.dot)}/>{s.status||'Active'}</span></td>
                   <td className="td text-gray-400">{s.joined_date||'—'}</td>
                   <td className="td"><div className="flex gap-1">
                     <button onClick={()=>viewStudent(s)} className="btn btn-sm" title="View details"><Eye className="w-3 h-3"/></button>
-                    <button onClick={()=>openEdit(s)} className="btn btn-sm"><Edit className="w-3 h-3"/></button>
+                    <button onClick={()=>openEdit(s)} className="btn btn-sm" title="Edit"><Edit className="w-3 h-3"/></button>
+                    <select
+                      value={s.status||'Active'}
+                      onChange={async e=>{await supabase.from('students').update({status:e.target.value}).eq('id',s.id);reload()}}
+                      className="text-xs border border-gray-200 rounded-lg px-1.5 py-1 bg-white text-gray-600 cursor-pointer hover:border-gray-300"
+                      title="Change status"
+                      onClick={e=>e.stopPropagation()}
+                    >
+                      {STUDENT_STATUSES.map(st=><option key={st.value} value={st.value}>{st.label}</option>)}
+                    </select>
                     <button onClick={()=>del(s.id)} className="btn btn-sm btn-danger"><Trash2 className="w-3 h-3"/></button>
                   </div></td>
                 </tr>)
@@ -3912,7 +3950,7 @@ function EnrollmentModal({ student, subjects, packages, onClose, reload }: any) 
                 <div>
                   <label className="label">Status</label>
                   <select className="input" value={p.status} onChange={e=>sf('status',e.target.value)}>
-                    <option>Active</option><option>Inactive</option><option>Trial</option>
+                    {STUDENT_STATUSES.map(s=><option key={s.value} value={s.value}>{s.label}</option>)}
                   </select>
                 </div>
               </div>
