@@ -19,6 +19,7 @@ const ac = (i:number) => avatarColors[i%avatarColors.length]
 const colorBadge:Record<string,string> = { violet:'bg-violet-50 text-violet-700', sky:'bg-sky-50 text-sky-700', emerald:'bg-emerald-50 text-emerald-700', amber:'bg-amber-50 text-amber-700', rose:'bg-rose-50 text-rose-700', indigo:'bg-indigo-50 text-indigo-700' }
 const colorCell:Record<string,string> = { violet:'bg-violet-100 text-violet-700 border border-violet-200', sky:'bg-sky-100 text-sky-700 border border-sky-200', emerald:'bg-emerald-100 text-emerald-700 border border-emerald-200', amber:'bg-amber-100 text-amber-700 border border-amber-200', rose:'bg-rose-100 text-rose-700 border border-rose-200', indigo:'bg-indigo-100 text-indigo-700 border border-indigo-200' }
 const PAY_MODES = ['UPI','Cash','Credit / Debit Card','Payment gateway','Cheque','Bank Transfer','Other']
+const PAY_STATUSES = ['paid','pending','overdue','failed']
 const LEAD_STATUSES = ['New','Contacted','Interested','Trial Scheduled','Converted','Lost']
 const leadColor:Record<string,string> = { 'New':'bg-blue-50 text-blue-700','Contacted':'bg-purple-50 text-purple-700','Interested':'bg-amber-50 text-amber-700','Trial Scheduled':'bg-orange-50 text-orange-700','Converted':'bg-emerald-50 text-emerald-700','Lost':'bg-red-50 text-red-700' }
 
@@ -1284,7 +1285,9 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
   const supabase=sb()
   const [tab,setTab]=useState('all');const [open,setOpen]=useState(false);const [importOpen,setImportOpen]=useState(false)
   const [invoice,setInvoice]=useState<any>(null);const [reminder,setReminder]=useState<any>(null)
-  const [form,setForm]=useState({student_id:'',subject_id:'',month_label:'',amount:'',payment_date:'',mode_of_payment:'UPI',receipt_number:'',invoice_number:'',description:'',notes:''})
+  const emptyForm = {student_id:'',subject_id:'',month_label:'',amount:'',payment_date:'',mode_of_payment:'UPI',receipt_number:'',invoice_number:'',description:'',notes:'',status:'paid',discount:''}
+  const [form,setForm]=useState<any>(emptyForm)
+  const [editing,setEditing]=useState<any>(null)
   const [busy,setBusy]=useState(false);const [importResult,setImportResult]=useState('');const [q,setQ]=useState('')
   const months=Array.from({length:12},(_,i)=>{const d=new Date();d.setMonth(d.getMonth()-i);return d.toLocaleString('en-IN',{month:'long',year:'numeric'})})
   const filtered=(tab==='all'?payments:payments.filter((p:any)=>p.status===tab)).filter((p:any)=>{const name=(p.students?.full_name||p.student_name||'').toLowerCase();return name.includes(q.toLowerCase())||p.receipt_number?.includes(q)||p.invoice_number?.includes(q)})
@@ -1292,11 +1295,56 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
   const pending=payments.filter((p:any)=>p.status==='pending').reduce((a:number,p:any)=>a+p.amount,0)
   const failed=payments.filter((p:any)=>p.status==='failed').length
 
+  function openAdd(){setEditing(null);setForm(emptyForm);setOpen(true)}
+  function openEdit(p:any){
+    setEditing(p)
+    setForm({
+      student_id: p.student_id||'',
+      subject_id: p.subject_id||'',
+      month_label: p.month_label||months[0],
+      amount: String(p.amount||''),
+      payment_date: p.payment_date||'',
+      mode_of_payment: p.mode_of_payment||'UPI',
+      receipt_number: p.receipt_number||'',
+      invoice_number: p.invoice_number||'',
+      description: p.description||'',
+      notes: p.notes||'',
+      status: p.status||'paid',
+      discount: String(p.discount||''),
+    })
+    setOpen(true)
+  }
+
   async function markPaid(id:string){await supabase.from('payments').update({status:'paid',payment_date:new Date().toISOString().slice(0,10)}).eq('id',id);reload()}
 
+  async function deletePayment(id:string){
+    if(!confirm('Delete this payment record? This cannot be undone.'))return
+    await supabase.from('payments').delete().eq('id',id)
+    reload()
+  }
+
   async function save(){
-    if(!form.student_id||!form.amount)return;setBusy(true)
-    await supabase.from('payments').insert({student_id:form.student_id,subject_id:form.subject_id||null,amount:+form.amount,payment_date:form.payment_date||new Date().toISOString().slice(0,10),status:'paid',month_label:form.month_label||months[0],mode_of_payment:form.mode_of_payment,receipt_number:form.receipt_number||null,invoice_number:form.invoice_number||null,description:form.description||null,notes:form.notes||null})
+    if(!form.amount)return;setBusy(true)
+    const payload:any={
+      amount:+form.amount,
+      payment_date:form.payment_date||new Date().toISOString().slice(0,10),
+      status:form.status||'paid',
+      month_label:form.month_label||months[0],
+      mode_of_payment:form.mode_of_payment,
+      receipt_number:form.receipt_number||null,
+      invoice_number:form.invoice_number||null,
+      description:form.description||null,
+      notes:form.notes||null,
+      discount:form.discount?+form.discount:null,
+    }
+    if(form.subject_id) payload.subject_id=form.subject_id
+    if(editing){
+      await supabase.from('payments').update(payload).eq('id',editing.id)
+    } else {
+      if(!form.student_id){setBusy(false);return}
+      payload.student_id=form.student_id
+      await supabase.from('payments').insert(payload)
+    }
     setBusy(false);setOpen(false);reload()
   }
 
@@ -1342,7 +1390,7 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
         <div><h1 className="text-xl font-semibold text-gray-900">Payments</h1><p className="text-sm text-gray-400 mt-0.5">Track fees, import history & send reminders</p></div>
         <div className="flex gap-2">
           <button onClick={()=>setImportOpen(true)} className="btn"><Upload className="w-4 h-4"/> Import CSV</button>
-          {perms.managePayments&&<button onClick={()=>setOpen(true)} className="btn-primary"><Plus className="w-4 h-4"/> Record</button>}
+          {perms.managePayments&&<button onClick={openAdd} className="btn-primary"><Plus className="w-4 h-4"/> Record</button>}
         </div>
       </div>
       {importResult&&<div className={clsx('mb-4 px-4 py-2.5 rounded-lg text-sm border flex items-center gap-2',
@@ -1380,8 +1428,10 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
                   <td className="td"><span className={clsx('badge',p.status==='paid'?'bg-emerald-50 text-emerald-700':p.status==='failed'?'bg-red-50 text-red-600':p.status==='overdue'?'bg-orange-50 text-orange-700':'bg-amber-50 text-amber-700')}>{p.status}</span></td>
                   <td className="td"><div className="flex gap-1">
                     {p.status!=='paid'&&p.status!=='failed'&&perms.managePayments&&<button onClick={()=>markPaid(p.id)} className="btn btn-sm" title="Mark paid"><CheckCircle className="w-3.5 h-3.5 text-emerald-500"/></button>}
-                    {(p.status==='pending'||p.status==='overdue')&&<button onClick={()=>setReminder(p)} className="btn btn-sm" title="Email reminder"><Mail className="w-3.5 h-3.5 text-amber-500"/></button>}
-                    {p.status==='paid'&&<button onClick={()=>setInvoice(p)} className="btn btn-sm" title="Invoice"><FileText className="w-3.5 h-3.5 text-gray-400"/></button>}
+                    {(p.status==='pending'||p.status==='overdue')&&<button onClick={()=>setReminder(p)} className="btn btn-sm" title="Send reminder"><Mail className="w-3.5 h-3.5 text-amber-500"/></button>}
+                    {p.status==='paid'&&<button onClick={()=>setInvoice(p)} className="btn btn-sm" title="View receipt"><FileText className="w-3.5 h-3.5 text-gray-400"/></button>}
+                    {perms.managePayments&&<button onClick={()=>openEdit(p)} className="btn btn-sm" title="Edit payment"><Edit className="w-3.5 h-3.5 text-blue-400"/></button>}
+                    {perms.managePayments&&<button onClick={()=>deletePayment(p.id)} className="btn btn-sm" title="Delete"><Trash2 className="w-3.5 h-3.5 text-red-300 hover:text-red-500"/></button>}
                   </div></td>
                 </tr>
               ))}
@@ -1391,20 +1441,48 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
         </div>
       </div>
 
-      {/* Record payment */}
-      <Modal open={open} onClose={()=>setOpen(false)} title="Record Payment" wide>
+      {/* Record / Edit payment */}
+      <Modal open={open} onClose={()=>setOpen(false)} title={editing?'Edit Payment':'Record Payment'} wide>
+        {editing&&(
+          <div className="mb-4 flex items-center gap-3 p-3 bg-blue-50 border border-blue-100 rounded-xl text-sm">
+            <Edit className="w-4 h-4 text-blue-500 flex-shrink-0"/>
+            <div>
+              <div className="font-medium text-blue-800">{editing.students?.full_name||editing.student_name||'Unknown student'}</div>
+              <div className="text-xs text-blue-600">Editing payment · Invoice #{editing.invoice_number||'—'} · Original: {fmt(editing.amount)}</div>
+            </div>
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-3">
-          <div className="col-span-2"><label className="label">Student *</label><select className="input" value={form.student_id} onChange={e=>setForm(f=>({...f,student_id:e.target.value}))}><option value="">— Select student —</option>{students.map((s:any)=><option key={s.id} value={s.id}>{s.full_name}</option>)}</select></div>
-          <div><label className="label">Subject</label><select className="input" value={form.subject_id} onChange={e=>{const fee=fees.find((f:any)=>f.subject_id===e.target.value);setForm(f=>({...f,subject_id:e.target.value,amount:fee?String(fee.amount):f.amount}))}}><option value="">— Select —</option>{subjects.map((s:any)=><option key={s.id} value={s.id}>{s.name}</option>)}</select></div>
-          <div><label className="label">Amount (₹) *</label><input className="input" type="number" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} placeholder="Auto-fills from fee"/></div>
-          <div><label className="label">Month</label><select className="input" value={form.month_label} onChange={e=>setForm(f=>({...f,month_label:e.target.value}))}>{months.map(m=><option key={m}>{m}</option>)}</select></div>
-          <div><label className="label">Payment Date</label><input className="input" type="date" value={form.payment_date} onChange={e=>setForm(f=>({...f,payment_date:e.target.value}))}/></div>
-          <div><label className="label">Mode of Payment</label><select className="input" value={form.mode_of_payment} onChange={e=>setForm(f=>({...f,mode_of_payment:e.target.value}))}>{PAY_MODES.map(m=><option key={m}>{m}</option>)}</select></div>
-          <div><label className="label">Receipt #</label><input className="input" value={form.receipt_number} onChange={e=>setForm(f=>({...f,receipt_number:e.target.value}))}/></div>
-          <div><label className="label">Invoice #</label><input className="input" value={form.invoice_number} onChange={e=>setForm(f=>({...f,invoice_number:e.target.value}))}/></div>
-          <div className="col-span-2"><label className="label">Description</label><input className="input" value={form.description} onChange={e=>setForm(f=>({...f,description:e.target.value}))} placeholder="Optional"/></div>
+          {!editing&&<div className="col-span-2"><label className="label">Student *</label><select className="input" value={form.student_id} onChange={e=>setForm((f:any)=>({...f,student_id:e.target.value}))}><option value="">— Select student —</option>{students.map((s:any)=><option key={s.id} value={s.id}>{s.full_name}</option>)}</select></div>}
+          <div><label className="label">Subject</label><select className="input" value={form.subject_id} onChange={e=>{const fee=fees.find((f:any)=>f.subject_id===e.target.value);setForm((f:any)=>({...f,subject_id:e.target.value,amount:fee?String(fee.amount):f.amount}))}}><option value="">— Select —</option>{subjects.map((s:any)=><option key={s.id} value={s.id}>{s.name}</option>)}</select></div>
+          <div><label className="label">Status</label><select className="input" value={form.status} onChange={e=>setForm((f:any)=>({...f,status:e.target.value}))}>{PAY_STATUSES.map(s=><option key={s} value={s}>{s}</option>)}</select></div>
+          <div><label className="label">Amount (₹) *</label><input className="input" type="number" value={form.amount} onChange={e=>setForm((f:any)=>({...f,amount:e.target.value}))} placeholder="e.g. 2200"/></div>
+          <div><label className="label">Discount (₹)</label><input className="input" type="number" value={form.discount} onChange={e=>setForm((f:any)=>({...f,discount:e.target.value}))} placeholder="0"/></div>
+          <div><label className="label">Month</label><select className="input" value={form.month_label} onChange={e=>setForm((f:any)=>({...f,month_label:e.target.value}))}>{months.map(m=><option key={m}>{m}</option>)}</select></div>
+          <div><label className="label">Payment Date</label><input className="input" type="date" value={form.payment_date} onChange={e=>setForm((f:any)=>({...f,payment_date:e.target.value}))}/></div>
+          <div><label className="label">Mode of Payment</label><select className="input" value={form.mode_of_payment} onChange={e=>setForm((f:any)=>({...f,mode_of_payment:e.target.value}))}>{PAY_MODES.map(m=><option key={m}>{m}</option>)}</select></div>
+          <div><label className="label">Receipt #</label><input className="input" value={form.receipt_number} onChange={e=>setForm((f:any)=>({...f,receipt_number:e.target.value}))}/></div>
+          <div><label className="label">Invoice #</label><input className="input" value={form.invoice_number} onChange={e=>setForm((f:any)=>({...f,invoice_number:e.target.value}))}/></div>
+          <div className="col-span-2"><label className="label">Description / Notes</label><input className="input" value={form.description} onChange={e=>setForm((f:any)=>({...f,description:e.target.value}))} placeholder="Optional"/></div>
         </div>
-        <div className="flex justify-end gap-2 pt-4"><button className="btn" onClick={()=>setOpen(false)}>Cancel</button><button className="btn-primary" onClick={save} disabled={busy}>{busy?<Loader2 className="w-4 h-4 animate-spin"/>:null}Record Payment</button></div>
+        {form.amount&&form.discount&&+form.discount>0&&(
+          <div className="mt-3 flex justify-between items-center px-3 py-2 bg-blue-50 rounded-lg text-sm">
+            <span className="text-blue-700">{fmt(+form.amount)} - {fmt(+form.discount)} discount</span>
+            <span className="font-semibold text-emerald-700">= {fmt(Math.max(0,+form.amount-+form.discount))}</span>
+          </div>
+        )}
+        <div className="flex justify-between items-center pt-4">
+          <div>
+            {editing&&<button onClick={()=>deletePayment(editing.id)} className="btn btn-sm btn-danger flex items-center gap-1"><Trash2 className="w-3.5 h-3.5"/> Delete</button>}
+          </div>
+          <div className="flex gap-2">
+            <button className="btn" onClick={()=>setOpen(false)}>Cancel</button>
+            <button className="btn-primary" onClick={save} disabled={busy}>
+              {busy?<Loader2 className="w-4 h-4 animate-spin"/>:<CheckCircle className="w-4 h-4"/>}
+              {editing?'Save Changes':'Record Payment'}
+            </button>
+          </div>
+        </div>
       </Modal>
 
       {/* Import payments */}
