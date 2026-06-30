@@ -3606,8 +3606,28 @@ function ReportsTab({ students, subjects, payments, profiles, attendance }: any)
 
   // ── helpers ──────────────────────────────────────────────────
   const paidPayments = payments.filter((p: any) => p.status === 'paid')
-  const currentYear = new Date().getFullYear()
-  const ytdPayments = paidPayments.filter((p: any) => p.payment_date?.startsWith(String(currentYear)))
+
+  // Financial year: 1 April to 31 March. If today is Jan-Mar, FY started last calendar year.
+  const today = new Date()
+  const fyStartYear = today.getMonth() >= 3 ? today.getFullYear() : today.getFullYear() - 1 // getMonth() 3 = April
+  const fyLabel = `FY ${fyStartYear}-${String(fyStartYear + 1).slice(2)}` // e.g. "FY 2025-26"
+  const fyStart = new Date(fyStartYear, 3, 1) // 1 April
+  const fyStartStr = `${fyStartYear}-04-01`
+
+  const ytdPayments = paidPayments.filter((p: any) => p.payment_date && p.payment_date >= fyStartStr)
+
+  // Month-to-date: current calendar month only
+  const mtdKey = today.toISOString().slice(0, 7)
+  const mtdPayments = paidPayments.filter((p: any) => p.payment_date?.startsWith(mtdKey))
+  const totalMTD = mtdPayments.reduce((a: number, p: any) => a + p.amount, 0)
+
+  // Build the ordered list of financial-year months Apr..Mar (only up to current month if current FY)
+  const monthsSinceApril = (today.getFullYear() - fyStartYear) * 12 + (today.getMonth() - 3) + 1
+  const fyMonthsToDate = Array.from({ length: Math.min(monthsSinceApril, 12) }, (_, i) => {
+    const idx = (3 + i) % 12 // 3 = April (0-indexed)
+    const yr = fyStartYear + Math.floor((3 + i) / 12)
+    return `${yr}-${String(idx + 1).padStart(2, '0')}`
+  })
 
   // Students by instrument/subject
   const studentsBySubject: Record<string, number> = {}
@@ -3644,8 +3664,10 @@ function ReportsTab({ students, subjects, payments, profiles, attendance }: any)
     monthlyCollection[key] = (monthlyCollection[key] || 0) + p.amount
   })
   const last12Months = Array.from({ length: 12 }, (_, i) => {
-    const d = new Date(); d.setMonth(d.getMonth() - 11 + i)
-    return d.toISOString().slice(0, 7)
+    const totalMonths = today.getFullYear() * 12 + today.getMonth() - (11 - i)
+    const yr = Math.floor(totalMonths / 12)
+    const mo = totalMonths % 12
+    return `${yr}-${String(mo + 1).padStart(2, '0')}`
   })
 
   // Payments by mode
@@ -3766,6 +3788,7 @@ function ReportsTab({ students, subjects, payments, profiles, attendance }: any)
         </div>
         {/* Summary pills */}
         <div className="flex gap-2 text-xs">
+          <div className="px-3 py-1.5 bg-amber-50 text-amber-700 rounded-lg font-medium">MTD: {fmt(totalMTD)}</div>
           <div className="px-3 py-1.5 bg-emerald-50 text-emerald-700 rounded-lg font-medium">YTD: {fmt(totalYTD)}</div>
           <div className="px-3 py-1.5 bg-brand-50 text-brand-700 rounded-lg font-medium">Ever: {fmt(totalEver)}</div>
         </div>
@@ -3775,7 +3798,7 @@ function ReportsTab({ students, subjects, payments, profiles, attendance }: any)
         {[
           { label:'Active Students', val:activeStudents, sub:`${inactiveStudents} inactive`, color:'bg-blue-50 text-blue-700' },
           { label:'Subjects Offered', val:subjects.length, sub:`${Object.keys(studentsBySubject).length} with students`, color:'bg-violet-50 text-violet-700' },
-          { label:'Collected YTD', val:fmt(totalYTD), sub:`${new Date().getFullYear()}`, color:'bg-emerald-50 text-emerald-700' },
+          { label:'Collected YTD', val:fmt(totalYTD), sub:fyLabel, color:'bg-emerald-50 text-emerald-700' },
           { label:'Attendance Rate', val:attPresent+attAbsent+attBillable>0?`${Math.round(attPresent/(attPresent+attAbsent+attBillable)*100)}%`:'—', sub:`${attPresent} present · ${attBillable} billable`, color:'bg-amber-50 text-amber-700' },
         ].map(m => (
           <div key={m.label} className={clsx('card p-4 border-0', m.color)}>
@@ -3979,17 +4002,18 @@ function ReportsTab({ students, subjects, payments, profiles, attendance }: any)
           {activeReport === 'payment_ytd' && (
             <div>
               <div className="flex items-center justify-between mb-4">
-                <h2 className="font-semibold text-gray-900">Year to Date — {currentYear}</h2>
-                <button onClick={() => exportCSV(Object.entries(ytdByMonth).map(([Month,Amount]) => ({Month,Amount})), `ytd_${currentYear}.csv`)} className="btn btn-sm"><Download className="w-3 h-3"/> Export</button>
+                <h2 className="font-semibold text-gray-900">Year to Date — {fyLabel}</h2>
+                <button onClick={() => exportCSV(Object.entries(ytdByMonth).map(([Month,Amount]) => ({Month,Amount})), `ytd_${fyStartYear}-${fyStartYear+1}.csv`)} className="btn btn-sm"><Download className="w-3 h-3"/> Export</button>
               </div>
-              <div className="grid grid-cols-3 gap-4 mb-5">
-                <div className="bg-emerald-50 rounded-xl p-4 text-center"><div className="text-2xl font-bold text-emerald-700">{fmt(totalYTD)}</div><div className="text-xs text-emerald-600 mt-1">Total Collected {currentYear}</div></div>
+              <div className="grid grid-cols-4 gap-4 mb-5">
+                <div className="bg-emerald-50 rounded-xl p-4 text-center"><div className="text-2xl font-bold text-emerald-700">{fmt(totalYTD)}</div><div className="text-xs text-emerald-600 mt-1">Total Collected {fyLabel}</div></div>
+                <div className="bg-amber-50 rounded-xl p-4 text-center"><div className="text-2xl font-bold text-amber-700">{fmt(totalMTD)}</div><div className="text-xs text-amber-600 mt-1">Month to Date</div></div>
                 <div className="bg-blue-50 rounded-xl p-4 text-center"><div className="text-2xl font-bold text-blue-700">{ytdPayments.length}</div><div className="text-xs text-blue-600 mt-1">Transactions</div></div>
-                <div className="bg-violet-50 rounded-xl p-4 text-center"><div className="text-2xl font-bold text-violet-700">{fmt(Math.round(totalYTD / (Object.keys(ytdByMonth).length||1)))}</div><div className="text-xs text-violet-600 mt-1">Avg per Month</div></div>
+                <div className="bg-violet-50 rounded-xl p-4 text-center"><div className="text-2xl font-bold text-violet-700">{fmt(Math.round(totalYTD / (fyMonthsToDate.length||1)))}</div><div className="text-xs text-violet-600 mt-1">Avg per Month</div></div>
               </div>
               <MonthChart
                 data={ytdByMonth}
-                months={Array.from({length: new Date().getMonth()+1}, (_,i) => `${currentYear}-${String(i+1).padStart(2,'0')}`)}
+                months={fyMonthsToDate}
               />
             </div>
           )}
