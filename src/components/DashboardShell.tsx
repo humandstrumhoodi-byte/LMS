@@ -364,7 +364,7 @@ function DashboardShellInner({profile}:{profile:Profile}){
           {tab==='schedule'&&<ScheduleTab schedules={schedules} subjects={subjects} students={students} profiles={profiles} profile={profile} perms={perms} reload={load}/>}
           {tab==='fees'&&<FeesTab subjects={subjects} fees={fees} reload={load}/>}
           {tab==='payments'&&<PaymentsTab payments={payments} students={students} subjects={subjects} fees={fees} perms={perms} reload={load}/>}
-          {tab==='reports'&&<ReportsTab students={students} subjects={subjects} payments={payments} profiles={profiles} attendance={attendance}/>}
+          {tab==='reports'&&<ReportsTab students={students} subjects={subjects} payments={payments} profiles={profiles} attendance={attendance} reload={load}/>}
           {tab==='attendance'&&<AttendanceTab schedules={schedules} subjects={subjects} students={students} profiles={profiles} profile={profile} attendance={attendance} reload={load}/>}
           {tab==='users'&&<UsersTab profiles={profiles} profile={profile} reload={load}/>}
           {tab==='settings'&&<CenterHoursTab profile={profile}/>}
@@ -3601,7 +3601,7 @@ function DonutChart({ data, total }: { data: { label: string; value: number; col
   )
 }
 
-function ReportsTab({ students, subjects, payments, profiles, attendance }: any) {
+function ReportsTab({ students, subjects, payments, profiles, attendance, reload }: any) {
   const [activeReport, setActiveReport] = useState<string>('students_status')
 
   // ── helpers ──────────────────────────────────────────────────
@@ -3706,6 +3706,7 @@ function ReportsTab({ students, subjects, payments, profiles, attendance }: any)
 
   const reports = [
     { id: 'students_status',     label: 'Students by Status',     group: 'Student Reports' },
+    { id: 'students_inactive',   label: 'Inactive Students',      group: 'Student Reports' },
     { id: 'students_instrument', label: 'Students by Instrument', group: 'Student Reports' },
     { id: 'students_grade',      label: 'Students by Grade',      group: 'Student Reports' },
     { id: 'students_payment',    label: 'Students by Payment',    group: 'Student Reports' },
@@ -3938,6 +3939,10 @@ function ReportsTab({ students, subjects, payments, profiles, attendance }: any)
             </div>
           )}
 
+          {activeReport === 'students_inactive' && (
+            <InactiveStudentsReport students={students} subjects={subjects} exportCSV={exportCSV} reload={reload}/>
+          )}
+
           {activeReport === 'students_instrument' && (
             <StudentsByInstrumentReport
               subjects={subjects}
@@ -3945,6 +3950,7 @@ function ReportsTab({ students, subjects, payments, profiles, attendance }: any)
               studentsBySubject={studentsBySubject}
               exportCSV={exportCSV}
               BarChart={BarChart}
+              reload={reload}
             />
           )}
 
@@ -4109,10 +4115,158 @@ function ReportsTab({ students, subjects, payments, profiles, attendance }: any)
 // MONTHLY BREAKDOWN REPORT — click month to see student list
 // ══════════════════════════════════════════════════════════════
 // ══════════════════════════════════════════════════════════════
-// STUDENTS BY INSTRUMENT — click to drill down by status
+// INACTIVE STUDENTS — status change + re-join email reminder
 // ══════════════════════════════════════════════════════════════
-function StudentsByInstrumentReport({ subjects, students, studentsBySubject, exportCSV, BarChart }: any) {
+function InactiveStudentsReport({ students, subjects, exportCSV, reload }: any) {
+  const supabase = sb()
+  const inactiveStudents = students.filter((s: any) => s.status === 'Inactive')
+  const [sending, setSending] = useState<Record<string, boolean>>({})
+  const [sentIds, setSentIds] = useState<Record<string, boolean>>({})
+  const [selected, setSelected] = useState<string[]>([])
+  const [bulkSending, setBulkSending] = useState(false)
+  const [bulkResult, setBulkResult] = useState('')
+  const [customMessage, setCustomMessage] = useState('')
+
+  async function changeStatus(studentId: string, newStatus: string) {
+    await supabase.from('students').update({ status: newStatus }).eq('id', studentId)
+    reload()
+  }
+
+  async function sendRejoinEmail(student: any) {
+    if (!student.email) return
+    setSending(s => ({ ...s, [student.id]: true }))
+    const r = await fetch('/api/email', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'rejoin_reminder', studentEmail: student.email, studentName: student.full_name, customMessage }),
+    })
+    setSending(s => ({ ...s, [student.id]: false }))
+    if (r.ok) setSentIds(s => ({ ...s, [student.id]: true }))
+  }
+
+  async function sendBulkRejoin() {
+    const targets = selected.length ? inactiveStudents.filter((s: any) => selected.includes(s.id)) : inactiveStudents
+    const withEmail = targets.filter((s: any) => s.email)
+    if (!withEmail.length) { setBulkResult('No selected students have an email on file'); return }
+    setBulkSending(true); setBulkResult('')
+    let sent = 0, failed = 0
+    for (const s of withEmail) {
+      const r = await fetch('/api/email', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'rejoin_reminder', studentEmail: s.email, studentName: s.full_name, customMessage }),
+      })
+      if (r.ok) { sent++; setSentIds(prev => ({ ...prev, [s.id]: true })) } else failed++
+    }
+    setBulkSending(false)
+    setBulkResult(`✓ Sent to ${sent} student${sent !== 1 ? 's' : ''}${failed ? ` · ${failed} failed` : ''}`)
+  }
+
+  function toggleSelect(id: string) {
+    setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id])
+  }
+
+  function exportList() {
+    exportCSV(inactiveStudents.map((s: any) => ({
+      Name: s.full_name, Email: s.email || '', Phone: s.phone || '', JoinedDate: s.joined_date || '',
+    })), 'inactive_students.csv')
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="font-semibold text-gray-900">Inactive Students ({inactiveStudents.length})</h2>
+        <button onClick={exportList} className="btn btn-sm"><Download className="w-3 h-3"/> Export</button>
+      </div>
+
+      {inactiveStudents.length === 0 ? (
+        <div className="text-center py-10 text-gray-300">No inactive students — everyone's active! 🎉</div>
+      ) : (
+        <>
+          {/* Bulk action bar */}
+          <div className="bg-gray-50 rounded-xl p-4 mb-4 space-y-3">
+            <div>
+              <label className="label">Re-join reminder message (optional)</label>
+              <textarea
+                className="input min-h-[56px] resize-none"
+                placeholder="e.g. We've added new evening slots — come back and continue learning!"
+                value={customMessage}
+                onChange={e => setCustomMessage(e.target.value)}
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <div className="text-xs text-gray-400">
+                {selected.length > 0 ? `${selected.length} selected` : `All ${inactiveStudents.filter((s: any) => s.email).length} with email will be emailed`}
+              </div>
+              <button onClick={sendBulkRejoin} disabled={bulkSending} className="btn-primary">
+                {bulkSending ? <Loader2 className="w-4 h-4 animate-spin"/> : <Mail className="w-4 h-4"/>}
+                {bulkSending ? 'Sending…' : selected.length ? `Email ${selected.length} Selected` : 'Email All Inactive'}
+              </button>
+            </div>
+            {bulkResult && <div className="text-xs text-emerald-600 font-medium">{bulkResult}</div>}
+          </div>
+
+          {/* Student list */}
+          <div className="space-y-2">
+            {inactiveStudents.map((s: any, i: number) => {
+              const subs = subjects.filter((sub: any) => (s.student_subjects || []).some((ss: any) => ss.subject_id === sub.id))
+              return (
+                <div key={s.id} className="flex items-center gap-3 p-3 bg-white border border-gray-100 rounded-xl hover:border-gray-200">
+                  <input type="checkbox" checked={selected.includes(s.id)} onChange={() => toggleSelect(s.id)} className="rounded border-gray-300 flex-shrink-0"/>
+                  <div className={clsx('w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold flex-shrink-0', ac(i))}>{ini(s.full_name)}</div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-gray-900 truncate">{s.full_name}</div>
+                    <div className="text-xs text-gray-400 truncate">{s.email || 'No email on file'}{s.phone ? ` · ${s.phone}` : ''}</div>
+                    {subs.length > 0 && <div className="flex flex-wrap gap-1 mt-1">{subs.map((sub: any) => <span key={sub.id} className={clsx('badge text-xs', colorBadge[sub.color] || colorBadge.violet)}>{sub.code}</span>)}</div>}
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <select
+                      value={s.status || 'Active'}
+                      onChange={e => changeStatus(s.id, e.target.value)}
+                      className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-600 cursor-pointer hover:border-gray-300"
+                    >
+                      {STUDENT_STATUSES.map(st => <option key={st.value} value={st.value}>{st.label}</option>)}
+                    </select>
+                    <button
+                      onClick={() => sendRejoinEmail(s)}
+                      disabled={!s.email || sending[s.id]}
+                      title={!s.email ? 'No email on file' : 'Send re-join reminder'}
+                      className={clsx('btn btn-sm', sentIds[s.id] ? 'text-emerald-600 border-emerald-200 bg-emerald-50' : 'text-brand-600 border-brand-200 hover:bg-brand-50')}
+                    >
+                      {sending[s.id] ? <Loader2 className="w-3.5 h-3.5 animate-spin"/> : sentIds[s.id] ? <CheckCircle className="w-3.5 h-3.5"/> : <Mail className="w-3.5 h-3.5"/>}
+                      {sentIds[s.id] ? 'Sent' : 'Remind'}
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+
+function StudentsByInstrumentReport({ subjects, students, studentsBySubject, exportCSV, BarChart, reload }: any) {
+  const supabase = sb()
   const [selectedSubject, setSelectedSubject] = useState<string | null>(null)
+  const [sending, setSending] = useState<Record<string, boolean>>({})
+  const [sentIds, setSentIds] = useState<Record<string, boolean>>({})
+
+  async function changeStatus(studentId: string, newStatus: string) {
+    await supabase.from('students').update({ status: newStatus }).eq('id', studentId)
+    reload()
+  }
+
+  async function sendRejoinEmail(student: any) {
+    if (!student.email) return
+    setSending(s => ({ ...s, [student.id]: true }))
+    const r = await fetch('/api/email', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'rejoin_reminder', studentEmail: student.email, studentName: student.full_name }),
+    })
+    setSending(s => ({ ...s, [student.id]: false }))
+    if (r.ok) setSentIds(s => ({ ...s, [student.id]: true }))
+  }
 
   const subjectObj = selectedSubject ? subjects.find((s: any) => s.name === selectedSubject) : null
   const subjectStudents = subjectObj
@@ -4183,16 +4337,37 @@ function StudentsByInstrumentReport({ subjects, students, studentsBySubject, exp
           </div>
 
           {/* Student list grouped by status */}
-          <div className="space-y-3">
+          <div className="space-y-4">
             {statusBreakdown.map(st => (
               <div key={st.value}>
                 <div className="flex items-center gap-2 mb-1.5">
                   <div className={clsx('w-2 h-2 rounded-full', st.dot)}/>
                   <span className="text-xs font-semibold text-gray-500">{st.label} ({st.count})</span>
                 </div>
-                <div className="flex flex-wrap gap-1.5 mb-2">
+                <div className="space-y-1.5">
                   {subjectStudents.filter((s: any) => (s.status || 'Active') === st.value).map((s: any) => (
-                    <span key={s.id} className="badge bg-gray-50 text-gray-600 text-xs border border-gray-100">{s.full_name}</span>
+                    <div key={s.id} className="flex items-center justify-between gap-2 px-3 py-2 bg-gray-50 rounded-lg">
+                      <span className="text-sm text-gray-800 truncate">{s.full_name}</span>
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                        <select
+                          value={s.status || 'Active'}
+                          onChange={e => changeStatus(s.id, e.target.value)}
+                          className="text-xs border border-gray-200 rounded-lg px-1.5 py-1 bg-white text-gray-600 cursor-pointer hover:border-gray-300"
+                        >
+                          {STUDENT_STATUSES.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                        </select>
+                        {st.value === 'Inactive' && (
+                          <button
+                            onClick={() => sendRejoinEmail(s)}
+                            disabled={!s.email || sending[s.id]}
+                            title={!s.email ? 'No email on file' : 'Send re-join reminder'}
+                            className={clsx('btn btn-sm', sentIds[s.id] ? 'text-emerald-600 border-emerald-200 bg-emerald-50' : 'text-brand-600 border-brand-200 hover:bg-brand-50')}
+                          >
+                            {sending[s.id] ? <Loader2 className="w-3 h-3 animate-spin"/> : sentIds[s.id] ? <CheckCircle className="w-3 h-3"/> : <Mail className="w-3 h-3"/>}
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   ))}
                 </div>
               </div>
