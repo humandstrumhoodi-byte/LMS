@@ -392,6 +392,97 @@ function DashboardShellInner({profile}:{profile:Profile}){
 }
 
 // ══════════════════════════════════════════════════════════════ HOME
+// ══════════════════════════════════════════════════════════════
+// PAYMENT DRILLDOWN — shared modal: payment list + remind buttons
+// Used by HomeTab and ReportsTab wherever Collected/Pending/Overdue totals appear
+// ══════════════════════════════════════════════════════════════
+function PaymentDrilldown({title,list,color,onClose,onViewAll}:{title:string;list:any[];color:string;onClose:()=>void;onViewAll:()=>void}){
+  const [sending,setSending]=useState<Record<string,boolean>>({})
+  const [sentIds,setSentIds]=useState<Record<string,boolean>>({})
+  const grandTotal=list.reduce((a:number,p:any)=>a+p.amount,0)
+
+  async function remind(p:any){
+    const email=p.students?.email||p.student_email
+    const name=p.students?.full_name||p.student_name||'Student'
+    if(!email)return
+    setSending(s=>({...s,[p.id]:true}))
+    const fine=calcLateFine(p)
+    await fetch('/api/email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      type:'fine_reminder',
+      studentEmail:email,
+      studentName:name,
+      invoiceData:{
+        invoiceNo:p.invoice_number||p.id.slice(0,6),
+        subjectName:p.subjects?.name||p.description||'Tuition',
+        monthLabel:p.month_label||'',
+        rawAmount:p.amount,
+        fineAmount:fine.fineAmount,
+        finePct:fine.finePct,
+        daysOverdue:fine.daysOverdue,
+        dueDate:p.due_date,
+        finalAmount:p.amount+fine.fineAmount,
+      }
+    })})
+    setSending(s=>({...s,[p.id]:false}))
+    setSentIds(s=>({...s,[p.id]:true}))
+  }
+
+  return(
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[80vh] flex flex-col animate-fu" onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+          <div>
+            <h2 className="font-semibold text-gray-900">{title}</h2>
+            <p className="text-xs text-gray-400 mt-0.5">{list.length} payment{list.length!==1?'s':''} · {fmt(grandTotal)}</p>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={onViewAll} className="btn btn-sm">View All →</button>
+            <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100"><X className="w-4 h-4"/></button>
+          </div>
+        </div>
+        <div className="overflow-y-auto flex-1">
+          {list.length===0
+            ? <div className="py-10 text-center text-gray-300">No payments</div>
+            : list.map((p:any,i:number)=>{
+                const fine=calcLateFine(p)
+                const name=p.students?.full_name||p.student_name||'Unknown'
+                const email=p.students?.email||p.student_email
+                return(
+                  <div key={p.id} className="flex items-center justify-between gap-3 px-5 py-3 border-b border-gray-50 last:border-0 hover:bg-gray-50/50">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className={clsx('w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold flex-shrink-0',ac(i))}>{ini(name)}</div>
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-gray-900 truncate">{name}</div>
+                        <div className="text-xs text-gray-400 truncate">
+                          {p.subjects?.name||p.description||'Tuition'} · {p.month_label}
+                          {fine.daysOverdue>0&&<span className="text-red-500 font-medium"> · {fine.daysOverdue}d overdue</span>}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <div className="text-right">
+                        <div className={clsx('text-sm font-semibold',color)}>{fmt(p.amount+(fine.fineAmount||0))}</div>
+                        {fine.fineAmount>0&&<div className="text-xs text-rose-500">+{fmt(fine.fineAmount)} fine</div>}
+                      </div>
+                      <button
+                        onClick={()=>remind(p)}
+                        disabled={!email||sending[p.id]}
+                        title={!email?'No email on file':'Send reminder'}
+                        className={clsx('btn btn-sm',sentIds[p.id]?'text-emerald-600 border-emerald-200 bg-emerald-50':'text-brand-600 border-brand-200 hover:bg-brand-50')}
+                      >
+                        {sending[p.id]?<Loader2 className="w-3.5 h-3.5 animate-spin"/>:sentIds[p.id]?<CheckCircle className="w-3.5 h-3.5"/>:<Mail className="w-3.5 h-3.5"/>}
+                      </button>
+                    </div>
+                  </div>
+                )
+              })
+          }
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function HomeTab({profile,perms,students,profiles,payments,schedules,subjects,leads,setTab}:any){
   const teachers=profiles.filter((p:any)=>p.role==='teacher'||p.role==='center_manager')
   const activeStudents=students.filter((s:any)=>s.status==='Active'||!s.status)
@@ -407,8 +498,23 @@ function HomeTab({profile,perms,students,profiles,payments,schedules,subjects,le
   const newLeads=leads.filter((l:any)=>l.status==='New').length
   const isTeacher=profile.role==='teacher'
 
-  // Drilldown state — show a mini student list overlay on the dashboard
+  // Financial year (1 Apr – 31 Mar) YTD/MTD for paid collections
+  const today=new Date()
+  const fyStartYear=today.getMonth()>=3?today.getFullYear():today.getFullYear()-1
+  const fyLabel=`FY ${fyStartYear}-${String(fyStartYear+1).slice(2)}`
+  const fyStartStr=`${fyStartYear}-04-01`
+  const mtdKey=today.toISOString().slice(0,7)
+  const paidPayments=payments.filter((p:any)=>p.status==='paid')
+  const ytdPaidList=paidPayments.filter((p:any)=>p.payment_date&&p.payment_date>=fyStartStr)
+  const mtdPaidList=paidPayments.filter((p:any)=>p.payment_date?.startsWith(mtdKey))
+  const totalYTD=ytdPaidList.reduce((a:number,p:any)=>a+p.amount,0)
+  const totalMTD=mtdPaidList.reduce((a:number,p:any)=>a+p.amount,0)
+  const pendingList=payments.filter((p:any)=>p.status==='pending')
+  const overdueList=payments.filter((p:any)=>p.status==='overdue')
+
+  // Drilldown state — students or payments overlay on the dashboard
   const [drilldown,setDrilldown]=useState<{title:string;list:any[]}|null>(null)
+  const [paymentDrilldown,setPaymentDrilldown]=useState<{title:string;list:any[];color:string}|null>(null)
 
   function StudentDrilldown({title,list}:{title:string;list:any[]}){
     return(
@@ -452,9 +558,13 @@ function HomeTab({profile,perms,students,profiles,payments,schedules,subjects,le
     )
   }
 
+
+
+
   return(
     <div className="animate-fu">
       {drilldown&&<StudentDrilldown title={drilldown.title} list={drilldown.list}/>}
+      {paymentDrilldown&&<PaymentDrilldown title={paymentDrilldown.title} list={paymentDrilldown.list} color={paymentDrilldown.color} onClose={()=>setPaymentDrilldown(null)} onViewAll={()=>{setPaymentDrilldown(null);setTab('payments')}}/>}
       <div className="mb-6">
         <h1 className="text-xl font-semibold text-gray-900">Good day, {profile.full_name.split(' ')[0]} 👋</h1>
         <p className="text-sm text-gray-400 mt-0.5">{new Date().toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}</p>
@@ -531,18 +641,26 @@ function HomeTab({profile,perms,students,profiles,payments,schedules,subjects,le
         </div>
 
         {/* ── Payment summary ── */}
-        <div className="grid grid-cols-3 gap-3 mb-4">
-          <button onClick={()=>setTab('payments')} className="card p-4 bg-emerald-50 border-emerald-100 text-left hover:shadow-md transition-shadow">
-            <div className="text-xs text-emerald-600 font-medium mb-1">Collected</div>
-            <div className="text-xl font-semibold text-emerald-700">{fmt(paid)}</div>
+        <div className="grid grid-cols-4 gap-3 mb-4">
+          <button onClick={()=>setPaymentDrilldown({title:`Month to Date — Collected`,list:mtdPaidList,color:'text-amber-700'})} className="card p-4 bg-amber-50 border-amber-100 text-left hover:shadow-md transition-shadow">
+            <div className="text-xs text-amber-600 font-medium mb-1">Collected MTD</div>
+            <div className="text-xl font-semibold text-amber-700">{fmt(totalMTD)}</div>
+            <div className="text-xs text-amber-500 mt-1">{mtdPaidList.length} payments</div>
           </button>
-          <button onClick={()=>setTab('payments')} className="card p-4 bg-amber-50 border-amber-100 text-left hover:shadow-md transition-shadow">
-            <div className="text-xs text-amber-600 font-medium mb-1">Pending</div>
-            <div className="text-xl font-semibold text-amber-700">{fmt(pending)}</div>
+          <button onClick={()=>setPaymentDrilldown({title:`${fyLabel} — Collected (YTD)`,list:ytdPaidList,color:'text-emerald-700'})} className="card p-4 bg-emerald-50 border-emerald-100 text-left hover:shadow-md transition-shadow">
+            <div className="text-xs text-emerald-600 font-medium mb-1">Collected {fyLabel}</div>
+            <div className="text-xl font-semibold text-emerald-700">{fmt(totalYTD)}</div>
+            <div className="text-xs text-emerald-500 mt-1">{ytdPaidList.length} payments</div>
           </button>
-          <button onClick={()=>setTab('payments')} className="card p-4 bg-red-50 border-red-100 text-left hover:shadow-md transition-shadow">
+          <button onClick={()=>setPaymentDrilldown({title:'Pending Payments',list:pendingList,color:'text-amber-700'})} className="card p-4 bg-orange-50 border-orange-100 text-left hover:shadow-md transition-shadow">
+            <div className="text-xs text-orange-600 font-medium mb-1">Pending</div>
+            <div className="text-xl font-semibold text-orange-700">{fmt(pending)}</div>
+            <div className="text-xs text-orange-500 mt-1">{pendingList.length+overdueList.length} invoices</div>
+          </button>
+          <button onClick={()=>setPaymentDrilldown({title:'Overdue Payments',list:overdueList,color:'text-red-700'})} className="card p-4 bg-red-50 border-red-100 text-left hover:shadow-md transition-shadow">
             <div className="text-xs text-red-500 font-medium mb-1">Overdue</div>
             <div className="text-xl font-semibold text-red-600">{overdue.length} invoice{overdue.length!==1?'s':''}</div>
+            <div className="text-xs text-red-400 mt-1">{fmt(overdueList.reduce((a:number,p:any)=>a+p.amount,0))}</div>
           </button>
         </div>
 
@@ -567,7 +685,7 @@ function HomeTab({profile,perms,students,profiles,payments,schedules,subjects,le
         </div>
 
         {newLeads>0&&<div className="card p-4 mb-4 border-purple-100 bg-purple-50/50 flex items-center justify-between"><div className="flex items-center gap-2 text-purple-700"><UserPlus className="w-4 h-4"/><span className="text-sm font-medium">{newLeads} new lead{newLeads>1?'s':''} awaiting follow-up</span></div><button onClick={()=>setTab('leads')} className="btn btn-sm text-purple-700 border-purple-200">View Leads</button></div>}
-        {overdue.length>0&&<div className="card mb-4"><div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between"><div className="flex items-center gap-2 text-sm font-medium text-red-600"><AlertCircle className="w-4 h-4"/>Overdue Fees</div><button onClick={()=>setTab('payments')} className="text-xs text-red-400 hover:text-red-600">View all →</button></div>{overdue.slice(0,5).map((p:any)=><div key={p.id} className="flex items-center justify-between px-5 py-3 border-b border-gray-50 last:border-0"><div><div className="text-sm font-medium text-gray-800">{p.students?.full_name||p.student_name}</div><div className="text-xs text-gray-400">{p.subjects?.name} · {p.month_label}</div></div><span className="text-sm font-semibold text-red-600">{fmt(p.amount)}</span></div>)}</div>}
+        {overdue.length>0&&<div className="card mb-4"><div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between"><div className="flex items-center gap-2 text-sm font-medium text-red-600"><AlertCircle className="w-4 h-4"/>Overdue Fees</div><button onClick={()=>setPaymentDrilldown({title:'Overdue Payments',list:overdueList,color:'text-red-700'})} className="text-xs text-red-400 hover:text-red-600">View all →</button></div>{overdue.slice(0,5).map((p:any)=><div key={p.id} className="flex items-center justify-between px-5 py-3 border-b border-gray-50 last:border-0"><div><div className="text-sm font-medium text-gray-800">{p.students?.full_name||p.student_name}</div><div className="text-xs text-gray-400">{p.subjects?.name} · {p.month_label}</div></div><span className="text-sm font-semibold text-red-600">{fmt(p.amount)}</span></div>)}</div>}
       </>)}
 
       {isTeacher&&<div className="card p-10 text-center"><CalendarDays className="w-12 h-12 text-brand-300 mx-auto mb-3"/><h2 className="text-base font-medium text-gray-800 mb-1">Your Teaching Schedule</h2><p className="text-sm text-gray-400 mb-5">View classes assigned to your subjects.</p><button onClick={()=>setTab('schedule')} className="btn-primary">View My Schedule</button></div>}
@@ -3791,6 +3909,7 @@ function DonutChart({ data, total }: { data: { label: string; value: number; col
 
 function ReportsTab({ students, subjects, payments, profiles, attendance, reload }: any) {
   const [activeReport, setActiveReport] = useState<string>('students_status')
+  const [paymentDrilldown, setPaymentDrilldown] = useState<{title:string;list:any[];color:string}|null>(null)
 
   // ── helpers ──────────────────────────────────────────────────
   const paidPayments = payments.filter((p: any) => p.status === 'paid')
@@ -3981,9 +4100,9 @@ function ReportsTab({ students, subjects, payments, profiles, attendance, reload
         </div>
         {/* Summary pills */}
         <div className="flex gap-2 text-xs">
-          <div className="px-3 py-1.5 bg-amber-50 text-amber-700 rounded-lg font-medium">MTD: {fmt(totalMTD)}</div>
-          <div className="px-3 py-1.5 bg-emerald-50 text-emerald-700 rounded-lg font-medium">YTD: {fmt(totalYTD)}</div>
-          <div className="px-3 py-1.5 bg-brand-50 text-brand-700 rounded-lg font-medium">Ever: {fmt(totalEver)}</div>
+          <button onClick={() => setPaymentDrilldown({title:'Month to Date — Collected', list:mtdPayments, color:'text-amber-700'})} className="px-3 py-1.5 bg-amber-50 text-amber-700 rounded-lg font-medium hover:bg-amber-100 transition-colors">MTD: {fmt(totalMTD)}</button>
+          <button onClick={() => setPaymentDrilldown({title:`${fyLabel} — Collected (YTD)`, list:ytdPayments, color:'text-emerald-700'})} className="px-3 py-1.5 bg-emerald-50 text-emerald-700 rounded-lg font-medium hover:bg-emerald-100 transition-colors">YTD: {fmt(totalYTD)}</button>
+          <button onClick={() => setPaymentDrilldown({title:'All-Time Collected', list:paidPayments, color:'text-brand-700'})} className="px-3 py-1.5 bg-brand-50 text-brand-700 rounded-lg font-medium hover:bg-brand-100 transition-colors">Ever: {fmt(totalEver)}</button>
         </div>
       </div>
 
@@ -3991,16 +4110,26 @@ function ReportsTab({ students, subjects, payments, profiles, attendance, reload
         {[
           { label:'Active Students', val:activeStudents, sub:`${inactiveStudents} inactive`, color:'bg-blue-50 text-blue-700' },
           { label:'Subjects Offered', val:subjects.length, sub:`${Object.keys(studentsBySubject).length} with students`, color:'bg-violet-50 text-violet-700' },
-          { label:'Collected YTD', val:fmt(totalYTD), sub:fyLabel, color:'bg-emerald-50 text-emerald-700' },
+          { label:'Collected YTD', val:fmt(totalYTD), sub:fyLabel, color:'bg-emerald-50 text-emerald-700', onClick:()=>setPaymentDrilldown({title:`${fyLabel} — Collected (YTD)`,list:ytdPayments,color:'text-emerald-700'}) },
           { label:'Attendance Rate', val:attPresent+attAbsent+attBillable>0?`${Math.round(attPresent/(attPresent+attAbsent+attBillable)*100)}%`:'—', sub:`${attPresent} present · ${attBillable} billable`, color:'bg-amber-50 text-amber-700' },
         ].map(m => (
-          <div key={m.label} className={clsx('card p-4 border-0', m.color)}>
-            <div className="text-xs font-medium opacity-70 mb-1">{m.label}</div>
-            <div className="text-2xl font-bold">{m.val}</div>
-            <div className="text-xs opacity-60 mt-0.5">{m.sub}</div>
-          </div>
+          m.onClick ? (
+            <button key={m.label} onClick={m.onClick} className={clsx('card p-4 border-0 text-left hover:shadow-md transition-shadow', m.color)}>
+              <div className="text-xs font-medium opacity-70 mb-1">{m.label}</div>
+              <div className="text-2xl font-bold">{m.val}</div>
+              <div className="text-xs opacity-60 mt-0.5">{m.sub}</div>
+            </button>
+          ) : (
+            <div key={m.label} className={clsx('card p-4 border-0', m.color)}>
+              <div className="text-xs font-medium opacity-70 mb-1">{m.label}</div>
+              <div className="text-2xl font-bold">{m.val}</div>
+              <div className="text-xs opacity-60 mt-0.5">{m.sub}</div>
+            </div>
+          )
         ))}
       </div>
+
+      {paymentDrilldown && <PaymentDrilldown title={paymentDrilldown.title} list={paymentDrilldown.list} color={paymentDrilldown.color} onClose={()=>setPaymentDrilldown(null)} onViewAll={()=>setPaymentDrilldown(null)}/>}
 
       <div className="grid grid-cols-4 gap-5">
         {/* Left nav */}
@@ -4199,8 +4328,8 @@ function ReportsTab({ students, subjects, payments, profiles, attendance, reload
                 <button onClick={() => exportCSV(Object.entries(ytdByMonth).map(([Month,Amount]) => ({Month,Amount})), `ytd_${fyStartYear}-${fyStartYear+1}.csv`)} className="btn btn-sm"><Download className="w-3 h-3"/> Export</button>
               </div>
               <div className="grid grid-cols-4 gap-4 mb-5">
-                <div className="bg-emerald-50 rounded-xl p-4 text-center"><div className="text-2xl font-bold text-emerald-700">{fmt(totalYTD)}</div><div className="text-xs text-emerald-600 mt-1">Total Collected {fyLabel}</div></div>
-                <div className="bg-amber-50 rounded-xl p-4 text-center"><div className="text-2xl font-bold text-amber-700">{fmt(totalMTD)}</div><div className="text-xs text-amber-600 mt-1">Month to Date</div></div>
+                <button onClick={()=>setPaymentDrilldown({title:`${fyLabel} — Collected (YTD)`,list:ytdPayments,color:'text-emerald-700'})} className="bg-emerald-50 rounded-xl p-4 text-center hover:shadow-md transition-shadow"><div className="text-2xl font-bold text-emerald-700">{fmt(totalYTD)}</div><div className="text-xs text-emerald-600 mt-1">Total Collected {fyLabel}</div></button>
+                <button onClick={()=>setPaymentDrilldown({title:'Month to Date — Collected',list:mtdPayments,color:'text-amber-700'})} className="bg-amber-50 rounded-xl p-4 text-center hover:shadow-md transition-shadow"><div className="text-2xl font-bold text-amber-700">{fmt(totalMTD)}</div><div className="text-xs text-amber-600 mt-1">Month to Date</div></button>
                 <div className="bg-blue-50 rounded-xl p-4 text-center"><div className="text-2xl font-bold text-blue-700">{ytdPayments.length}</div><div className="text-xs text-blue-600 mt-1">Transactions</div></div>
                 <div className="bg-violet-50 rounded-xl p-4 text-center"><div className="text-2xl font-bold text-violet-700">{fmt(Math.round(totalYTD / (fyMonthsToDate.length||1)))}</div><div className="text-xs text-violet-600 mt-1">Avg per Month</div></div>
               </div>
