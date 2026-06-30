@@ -3677,12 +3677,16 @@ function ReportsTab({ students, subjects, payments, profiles, attendance }: any)
     byMode[mode] = (byMode[mode] || 0) + p.amount
   })
 
-  // Payments by subject
+  // Payments by subject — all-time, YTD (financial year), and MTD
   const bySubject: Record<string, number> = {}
+  const bySubjectYTD: Record<string, number> = {}
+  const bySubjectMTD: Record<string, number> = {}
   payments.forEach((p: any) => {
     if (p.status !== 'paid') return
     const name = p.subjects?.name || 'Other'
     bySubject[name] = (bySubject[name] || 0) + p.amount
+    if (p.payment_date && p.payment_date >= fyStartStr) bySubjectYTD[name] = (bySubjectYTD[name] || 0) + p.amount
+    if (p.payment_date?.startsWith(mtdKey)) bySubjectMTD[name] = (bySubjectMTD[name] || 0) + p.amount
   })
 
   // YTD by month
@@ -3935,21 +3939,13 @@ function ReportsTab({ students, subjects, payments, profiles, attendance }: any)
           )}
 
           {activeReport === 'students_instrument' && (
-            <div>
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="font-semibold text-gray-900">Students by Instrument</h2>
-                <button onClick={() => exportCSV(Object.entries(studentsBySubject).map(([Subject,Count]) => ({Subject,Count})), 'students_by_instrument.csv')} className="btn btn-sm"><Download className="w-3 h-3"/> Export</button>
-              </div>
-              <BarChart data={studentsBySubject} valuePrefix="" />
-              <div className="mt-5 grid grid-cols-3 gap-3">
-                {Object.entries(studentsBySubject).sort(([,a],[,b]) => b-a).map(([name, count]) => (
-                  <div key={name} className="bg-gray-50 rounded-xl p-3 text-center">
-                    <div className="text-xl font-bold text-gray-900">{count}</div>
-                    <div className="text-xs text-gray-500 mt-0.5">{name}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <StudentsByInstrumentReport
+              subjects={subjects}
+              students={students}
+              studentsBySubject={studentsBySubject}
+              exportCSV={exportCSV}
+              BarChart={BarChart}
+            />
           )}
 
           {activeReport === 'students_payment' && (
@@ -3994,6 +3990,9 @@ function ReportsTab({ students, subjects, payments, profiles, attendance }: any)
               paidPayments={paidPayments}
               last12Months={last12Months}
               monthlyCollection={monthlyCollection}
+              totalYTD={totalYTD}
+              totalMTD={totalMTD}
+              fyLabel={fyLabel}
               exportCSV={exportCSV}
               MonthChart={MonthChart}
             />
@@ -4040,13 +4039,13 @@ function ReportsTab({ students, subjects, payments, profiles, attendance }: any)
           )}
 
           {activeReport === 'payment_subject' && (
-            <div>
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="font-semibold text-gray-900">Revenue by Subject</h2>
-                <button onClick={() => exportCSV(Object.entries(bySubject).map(([Subject,Amount]) => ({Subject,Amount})), 'revenue_by_subject.csv')} className="btn btn-sm"><Download className="w-3 h-3"/> Export</button>
-              </div>
-              <BarChart data={bySubject} />
-            </div>
+            <RevenueBySubjectReport
+              bySubjectYTD={bySubjectYTD}
+              bySubjectMTD={bySubjectMTD}
+              fyLabel={fyLabel}
+              exportCSV={exportCSV}
+              BarChart={BarChart}
+            />
           )}
 
           {activeReport === 'attendance_report' && (
@@ -4109,7 +4108,146 @@ function ReportsTab({ students, subjects, payments, profiles, attendance }: any)
 // ══════════════════════════════════════════════════════════════
 // MONTHLY BREAKDOWN REPORT — click month to see student list
 // ══════════════════════════════════════════════════════════════
-function MonthlyBreakdownReport({ paidPayments, last12Months, monthlyCollection, exportCSV, MonthChart }: any) {
+// ══════════════════════════════════════════════════════════════
+// STUDENTS BY INSTRUMENT — click to drill down by status
+// ══════════════════════════════════════════════════════════════
+function StudentsByInstrumentReport({ subjects, students, studentsBySubject, exportCSV, BarChart }: any) {
+  const [selectedSubject, setSelectedSubject] = useState<string | null>(null)
+
+  const subjectObj = selectedSubject ? subjects.find((s: any) => s.name === selectedSubject) : null
+  const subjectStudents = subjectObj
+    ? students.filter((s: any) => (s.student_subjects || []).some((ss: any) => ss.subject_id === subjectObj.id))
+    : []
+
+  const statusBreakdown = STUDENT_STATUSES.map(st => ({
+    ...st,
+    count: subjectStudents.filter((s: any) => (s.status || 'Active') === st.value).length,
+  })).filter(st => st.count > 0)
+
+  function exportSubject() {
+    if (!selectedSubject) return
+    const rows = subjectStudents.map((s: any) => ({
+      Name: s.full_name, Status: s.status || 'Active', Email: s.email || '', Phone: s.phone || '',
+    }))
+    exportCSV(rows, `${selectedSubject}_students.csv`)
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="font-semibold text-gray-900">Students by Instrument — click a bar to see breakdown by status</h2>
+        <div className="flex gap-2">
+          {selectedSubject && <button onClick={exportSubject} className="btn btn-sm"><Download className="w-3 h-3"/> Export {selectedSubject}</button>}
+          <button onClick={() => exportCSV(Object.entries(studentsBySubject).map(([Subject,Count]) => ({Subject,Count})), 'students_by_instrument.csv')} className="btn btn-sm"><Download className="w-3 h-3"/> Export All</button>
+        </div>
+      </div>
+
+      {/* Clickable bars */}
+      <div className="space-y-2.5">
+        {Object.entries(studentsBySubject).sort(([,a]: any,[,b]: any) => b-a).map(([label, value]: any, i: number) => {
+          const max = Math.max(...Object.values(studentsBySubject) as number[], 1)
+          const isSelected = selectedSubject === label
+          return (
+            <div key={label} className="cursor-pointer group" onClick={() => setSelectedSubject(isSelected ? null : label)}>
+              <div className="flex justify-between text-xs text-gray-600 mb-1">
+                <span className={clsx('truncate max-w-[180px] font-medium', isSelected && 'text-brand-600')}>{label}{isSelected && ' ▼'}</span>
+                <span className="font-semibold ml-2">{value}</span>
+              </div>
+              <div className="h-6 bg-gray-100 rounded-full overflow-hidden group-hover:opacity-80 transition-opacity">
+                <div
+                  className={clsx('h-full rounded-full transition-all duration-500', isSelected ? 'bg-brand-500' : '')}
+                  style={{ width: `${(value / max) * 100}%`, background: isSelected ? undefined : '#7B5FC4' }}
+                />
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Status drilldown for selected subject */}
+      {selectedSubject && (
+        <div className="mt-6 pt-5 border-t border-gray-100 animate-fu">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-semibold text-gray-900">{selectedSubject} — {subjectStudents.length} students by status</h3>
+            <button onClick={() => setSelectedSubject(null)} className="text-xs text-gray-400 hover:text-gray-600">✕ Close</button>
+          </div>
+
+          <div className="grid grid-cols-4 gap-3 mb-4">
+            {statusBreakdown.map(st => (
+              <div key={st.value} className={clsx('rounded-xl p-3 border text-center', st.color)}>
+                <div className="text-xl font-bold">{st.count}</div>
+                <div className="text-xs mt-0.5 opacity-75">{st.label}</div>
+              </div>
+            ))}
+            {!statusBreakdown.length && <div className="col-span-4 text-center text-gray-300 py-4 text-sm">No students found</div>}
+          </div>
+
+          {/* Student list grouped by status */}
+          <div className="space-y-3">
+            {statusBreakdown.map(st => (
+              <div key={st.value}>
+                <div className="flex items-center gap-2 mb-1.5">
+                  <div className={clsx('w-2 h-2 rounded-full', st.dot)}/>
+                  <span className="text-xs font-semibold text-gray-500">{st.label} ({st.count})</span>
+                </div>
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {subjectStudents.filter((s: any) => (s.status || 'Active') === st.value).map((s: any) => (
+                    <span key={s.id} className="badge bg-gray-50 text-gray-600 text-xs border border-gray-100">{s.full_name}</span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════
+// REVENUE BY SUBJECT — YTD / MTD toggle
+// ══════════════════════════════════════════════════════════════
+function RevenueBySubjectReport({ bySubjectYTD, bySubjectMTD, fyLabel, exportCSV, BarChart }: any) {
+  const [period, setPeriod] = useState<'ytd' | 'mtd'>('ytd')
+  const data = period === 'ytd' ? bySubjectYTD : bySubjectMTD
+  const total: number = Object.values(data).reduce((a: number, v: any) => a + v, 0) as number
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="font-semibold text-gray-900">Revenue by Subject</h2>
+        <button onClick={() => exportCSV(Object.entries(data).map(([Subject,Amount]) => ({Subject,Amount})), `revenue_by_subject_${period}.csv`)} className="btn btn-sm"><Download className="w-3 h-3"/> Export</button>
+      </div>
+
+      {/* Period toggle */}
+      <div className="flex rounded-xl border border-gray-200 overflow-hidden w-fit mb-5">
+        <button onClick={() => setPeriod('mtd')}
+          className={clsx('px-4 py-2 text-sm font-medium transition-colors', period==='mtd' ? 'bg-amber-500 text-white' : 'text-gray-500 hover:bg-gray-50')}>
+          Month to Date
+        </button>
+        <button onClick={() => setPeriod('ytd')}
+          className={clsx('px-4 py-2 text-sm font-medium transition-colors', period==='ytd' ? 'bg-emerald-500 text-white' : 'text-gray-500 hover:bg-gray-50')}>
+          {fyLabel} (YTD)
+        </button>
+      </div>
+
+      <div className={clsx('rounded-xl p-4 mb-5 border', period==='ytd' ? 'bg-emerald-50 border-emerald-100' : 'bg-amber-50 border-amber-100')}>
+        <div className={clsx('text-xs font-semibold uppercase tracking-wide', period==='ytd' ? 'text-emerald-600' : 'text-amber-600')}>
+          Total {period==='ytd' ? fyLabel : 'This Month'}
+        </div>
+        <div className={clsx('text-2xl font-bold mt-1', period==='ytd' ? 'text-emerald-700' : 'text-amber-700')}>{fmt(total)}</div>
+      </div>
+
+      {Object.keys(data).length === 0
+        ? <div className="text-center py-10 text-gray-300">No revenue recorded for this period</div>
+        : <BarChart data={data} />
+      }
+    </div>
+  )
+}
+
+
+function MonthlyBreakdownReport({ paidPayments, last12Months, monthlyCollection, totalYTD, totalMTD, fyLabel, exportCSV, MonthChart }: any) {
   const [selectedMonth, setSelectedMonth] = useState<string | null>(null)
 
   const monthStudents = selectedMonth
@@ -4150,6 +4288,18 @@ function MonthlyBreakdownReport({ paidPayments, last12Months, monthlyCollection,
             <button onClick={exportMonth} className="btn btn-sm"><Download className="w-3 h-3"/> Export {selectedMonth}</button>
           )}
           <button onClick={() => exportCSV(last12Months.map((m: string) => ({ Month: m, Amount: monthlyCollection[m]||0 })), 'monthly_collection.csv')} className="btn btn-sm"><Download className="w-3 h-3"/> Export All</button>
+        </div>
+      </div>
+
+      {/* YTD / MTD summary */}
+      <div className="grid grid-cols-2 gap-4 mb-5">
+        <div className="bg-amber-50 border border-amber-100 rounded-xl p-4">
+          <div className="text-xs text-amber-600 font-semibold uppercase tracking-wide">Month to Date</div>
+          <div className="text-2xl font-bold text-amber-700 mt-1">{fmt(totalMTD)}</div>
+        </div>
+        <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4">
+          <div className="text-xs text-emerald-600 font-semibold uppercase tracking-wide">{fyLabel} (Year to Date)</div>
+          <div className="text-2xl font-bold text-emerald-700 mt-1">{fmt(totalYTD)}</div>
         </div>
       </div>
 
