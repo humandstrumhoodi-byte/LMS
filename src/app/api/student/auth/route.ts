@@ -79,23 +79,25 @@ export async function GET(req: NextRequest) {
     const subjectId = params.get('subject_id')
     if (!subjectId) return NextResponse.json({ error: 'subject_id required' }, { status: 400 })
 
-    const WORKING_DAYS = ['Sun','Tue','Wed','Thu','Fri','Sat']
-    const SLOT_TIMES = ['09:00','09:30','10:00','10:30','11:00','11:30','12:00','12:30','14:00','14:30','15:00','15:30','16:00','16:30','17:00','17:30','18:00','18:30','19:00','19:30']
-
-    const [{ data: allSchedules }, { data: blockedSlots }] = await Promise.all([
+    const [{ data: allSchedules }, { data: blockedSlots }, { data: centerHours }] = await Promise.all([
       svc.from('class_schedules').select('day_of_week, start_time, subject_id'),
       svc.from('blocked_slots').select('day_of_week, start_time'),
+      svc.from('center_hours').select('*'),
     ])
 
     const bookedSet = new Set((allSchedules || []).map(s => `${s.day_of_week}|${s.start_time?.slice(0,5)}`))
     const blockedSet = new Set((blockedSlots || []).map(b => `${b.day_of_week}|${b.start_time?.slice(0,5)}`))
 
     const slots: { day: string; time: string; status: 'free' | 'booked' | 'blocked' }[] = []
-    for (const day of WORKING_DAYS) {
-      for (const time of SLOT_TIMES) {
-        const key = `${day}|${time}`
+    for (const h of (centerHours || [])) {
+      if (h.is_closed) continue
+      const [openHour] = (h.open_time as string).split(':').map(Number)
+      const [closeHour] = (h.close_time as string).split(':').map(Number)
+      for (let hr = openHour; hr < closeHour; hr++) {
+        const time = `${String(hr).padStart(2, '0')}:00`
+        const key = `${h.day_of_week}|${time}`
         slots.push({
-          day, time,
+          day: h.day_of_week, time,
           status: blockedSet.has(key) ? 'blocked' : bookedSet.has(key) ? 'booked' : 'free',
         })
       }

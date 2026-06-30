@@ -6,7 +6,7 @@ import {
   LayoutDashboard, Users, GraduationCap, BookOpen, CalendarDays, Coins,
   Receipt, ShieldCheck, LogOut, Music, Bell, FileText, CheckCircle,
   Plus, Trash2, Edit, Search, X, ChevronRight, Loader2, AlertCircle,
-  Upload, Download, UserPlus, Mail, Send, Eye, EyeOff, CreditCard, Phone, KeyRound, RefreshCw, BarChart2
+  Upload, Download, UserPlus, Mail, Send, Eye, EyeOff, CreditCard, Phone, KeyRound, RefreshCw, BarChart2, Clock
 } from 'lucide-react'
 import clsx from 'clsx'
 import type { Profile, Perms, Role } from '@/types'
@@ -318,6 +318,7 @@ function DashboardShellInner({profile}:{profile:Profile}){
     {id:'reports',   icon:BarChart2,   label:'Reports',       show:perms.viewPayments},
     {id:'attendance', icon:CheckCircle, label:'Attendance',    show:perms.viewOwnSchedule},
     {id:'users',      icon:ShieldCheck, label:'Users & Roles', show:perms.manageUsers},
+    {id:'settings',   icon:Clock,       label:'Center Hours',  show:perms.manageUsers},
   ].filter(n=>n.show)
 
   return(
@@ -366,6 +367,7 @@ function DashboardShellInner({profile}:{profile:Profile}){
           {tab==='reports'&&<ReportsTab students={students} subjects={subjects} payments={payments} profiles={profiles} attendance={attendance}/>}
           {tab==='attendance'&&<AttendanceTab schedules={schedules} subjects={subjects} students={students} profiles={profiles} profile={profile} attendance={attendance} reload={load}/>}
           {tab==='users'&&<UsersTab profiles={profiles} profile={profile} reload={load}/>}
+          {tab==='settings'&&<CenterHoursTab profile={profile}/>}
         </div>
       </main>
     </div>
@@ -1280,8 +1282,13 @@ function SubjectsTab({subjects,profiles,students,fees,subjectTeachers,reload}:an
 
 function renderWeekView(p:any){
   const {visible,WORKING_DAYS,SLOT_TIMES,isBlocked,toggleBlock,isTeacher,
-         setReminderCls,setReminderOpen,setSentResult,subById,profiles} = p
+         setReminderCls,setReminderOpen,setSentResult,subById,profiles,centerHours} = p
   const todayAbbr = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date().getDay()]
+  function isWithinHours(day:string,time:string){
+    const h=(centerHours||[]).find((c:any)=>c.day_of_week===day)
+    if(!h||h.is_closed) return false
+    return time>=h.open_time?.slice(0,5) && time<h.close_time?.slice(0,5)
+  }
   return (
     <div className="card overflow-hidden">
       <div className="overflow-x-auto">
@@ -1311,13 +1318,17 @@ function renderWeekView(p:any){
                   {WORKING_DAYS.map((day:string)=>{
                     const cls=visible.filter((sc:any)=>sc.day_of_week===day&&sc.start_time?.slice(0,5)===time)
                     const blocked=isBlocked(day,time)
+                    const open=isWithinHours(day,time)
+                    if(!open&&!cls.length){
+                      return <td key={day} className="px-1 py-0.5 align-top bg-gray-50/60" style={{minHeight:28}}/>
+                    }
                     return (
                       <td key={day}
                         className={clsx('px-1 py-0.5 align-top transition-colors group',
                           blocked?'bg-red-50':(!cls.length&&!isTeacher)?'hover:bg-gray-50/80 cursor-pointer':'')}
                         style={{minHeight:28}}
-                        onClick={()=>{ if(!cls.length&&!isTeacher) toggleBlock(day,time) }}
-                        title={(!cls.length&&!isTeacher)?(blocked?'Click to unblock':'Click to block slot'):''}
+                        onClick={()=>{ if(!cls.length&&!isTeacher&&open) toggleBlock(day,time) }}
+                        title={(!cls.length&&!isTeacher&&open)?(blocked?'Click to unblock':'Click to block slot'):''}
                       >
                         {blocked&&!cls.length&&(
                           <div className="rounded-lg px-2 py-1.5 mb-0.5 text-xs bg-red-100 text-red-400 border border-red-200 flex items-center gap-1">
@@ -1523,7 +1534,7 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
   const [open,setOpen]=useState(false)
   const [reminderOpen,setReminderOpen]=useState(false)
   const [reminderCls,setReminderCls]=useState<any>(null)
-  const [form,setForm]=useState({subject_id:'',day_of_week:'Sun',start_time:'10:00',duration_minutes:45,student_ids:[] as string[],studentSearch:''})
+  const [form,setForm]=useState({subject_id:'',day_of_week:'Sun',start_time:'10:00',duration_minutes:60,student_ids:[] as string[],studentSearch:''})
   const [busy,setBusy]=useState(false)
   const [reminderMsg,setReminderMsg]=useState('')
   const [sending,setSending]=useState(false)
@@ -1535,6 +1546,15 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
   const [reviewModal,setReviewModal]=useState<any>(null)
   const [reviewBusy,setReviewBusy]=useState(false)
   const [reviewNote,setReviewNote]=useState('')
+
+  // Center hours
+  const [centerHours,setCenterHours]=useState<any[]>([])
+  useEffect(()=>{ loadCenterHours() },[])
+  async function loadCenterHours(){
+    const r=await fetch('/api/center-hours')
+    const d=await r.json()
+    setCenterHours(d.hours||[])
+  }
 
   useEffect(()=>{ loadRescheduleRequests() },[])
   async function loadRescheduleRequests(){
@@ -1579,9 +1599,23 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
     setBlockBusy(false);setBlockModal(null);loadBlocked()
   }
 
-  const WORKING_DAYS = ['Sun','Tue','Wed','Thu','Fri','Sat'] // Mon is holiday
-  const DAY_LABELS: Record<string,string> = { Sun:'Sunday', Tue:'Tuesday', Wed:'Wednesday', Thu:'Thursday', Fri:'Friday', Sat:'Saturday' }
-  const SLOT_TIMES = ['08:00','08:30','09:00','09:30','10:00','10:30','11:00','11:30','12:00','12:30','13:00','13:30','14:00','14:30','15:00','15:30','16:00','16:30','17:00','17:30','18:00','18:30','19:00','19:30','20:00']
+  const DAY_LABELS: Record<string,string> = { Sun:'Sunday', Tue:'Tuesday', Wed:'Wednesday', Thu:'Thursday', Fri:'Friday', Sat:'Saturday', Mon:'Monday' }
+  const WORKING_DAYS = centerHours.length
+    ? centerHours.filter((h:any)=>!h.is_closed).map((h:any)=>h.day_of_week).sort((a:string,b:string)=>['Sun','Tue','Wed','Thu','Fri','Sat'].indexOf(a)-['Sun','Tue','Wed','Thu','Fri','Sat'].indexOf(b))
+    : ['Sun','Tue','Wed','Thu','Fri','Sat'] // fallback while loading
+
+  // 60-minute slots, computed per-day from open/close time (union across all working days for the grid)
+  function hourSlotsForDay(day:string):string[] {
+    const h = centerHours.find((c:any)=>c.day_of_week===day)
+    if (!h || h.is_closed) return []
+    const slots:string[] = []
+    let [oh] = h.open_time.split(':').map(Number)
+    let [ch] = h.close_time.split(':').map(Number)
+    for (let hr=oh; hr<ch; hr++) slots.push(`${String(hr).padStart(2,'0')}:00`)
+    return slots
+  }
+  // Union of all hour slots across working days — used for the weekly grid's row labels
+  const SLOT_TIMES = Array.from(new Set(WORKING_DAYS.flatMap((d:string)=>hourSlotsForDay(d)))).sort()
 
   // Computed visible schedules
   const teachers = profiles.filter((p:any)=>['teacher','center_manager','superadmin'].includes(p.role))
@@ -1693,7 +1727,7 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
       </div>
 
       {/* View content */}
-      {viewMode==='week'&&renderWeekView({visible,WORKING_DAYS,SLOT_TIMES,isBlocked,toggleBlock,isTeacher,setReminderCls,setReminderOpen,setSentResult,subById,profiles,blockedSlots})}
+      {viewMode==='week'&&renderWeekView({visible,WORKING_DAYS,SLOT_TIMES,isBlocked,toggleBlock,isTeacher,setReminderCls,setReminderOpen,setSentResult,subById,profiles,blockedSlots,centerHours})}
       {viewMode==='day'&&renderDayView({visible,selectedDate,setSelectedDate,WORKING_DAYS,DAY_LABELS,isTeacher,subById,profiles,students,setReminderCls,setReminderOpen,setSentResult,del})}
       {viewMode==='month'&&renderMonthView({visible,selectedDate,setSelectedDate,setViewMode,subById})}
 
@@ -1817,27 +1851,26 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
             <div>
               <label className="label">Start Time</label>
               <select className="input" value={form.start_time} onChange={e=>setForm((f:any)=>({...f,start_time:e.target.value}))}>
-                {SLOT_TIMES.map(t=><option key={t}>{t}</option>)}
+                {hourSlotsForDay(form.day_of_week).map(t=><option key={t}>{t}</option>)}
               </select>
             </div>
             <div>
-              <label className="label">Duration (min)</label>
-              <select className="input" value={form.duration_minutes} onChange={e=>setForm((f:any)=>({...f,duration_minutes:+e.target.value}))}>
-                {[30,45,60,90].map(d=><option key={d} value={d}>{d} min</option>)}
-              </select>
+              <label className="label">Duration</label>
+              <div className="input bg-gray-50 text-gray-500 flex items-center">60 min (fixed)</div>
             </div>
           </div>
 
           {/* Free slots preview */}
           {form.subject_id&&(()=>{
+            const daySlots=hourSlotsForDay(form.day_of_week)
             const bookedSlots=schedules.filter((sc:any)=>sc.subject_id===form.subject_id&&sc.day_of_week===form.day_of_week).map((sc:any)=>sc.start_time?.slice(0,5))
             const conflictSlots=schedules.filter((sc:any)=>sc.day_of_week===form.day_of_week).map((sc:any)=>sc.start_time?.slice(0,5))
             const blockedForDay=blockedSlots.filter((b:any)=>b.day_of_week===form.day_of_week).map((b:any)=>b.start_time?.slice(0,5))
             return(
               <div>
-                <div className="label mb-2">Slot availability for {form.day_of_week}</div>
+                <div className="label mb-2">Slot availability for {form.day_of_week} ({daySlots[0]||'—'}–{daySlots.length?daySlots[daySlots.length-1]:'—'})</div>
                 <div className="flex flex-wrap gap-1.5">
-                  {SLOT_TIMES.map(t=>{
+                  {daySlots.map(t=>{
                     const isBooked=bookedSlots.includes(t)
                     const hasConflict=conflictSlots.includes(t)
                     const isBlockedSlot=blockedForDay.includes(t)
@@ -2286,7 +2319,136 @@ function UsersTab({profiles,profile:self,reload}:any){
 }
 
 // ══════════════════════════════════════════════════════════════
-// PACKAGES TAB
+// CENTER HOURS TAB (superadmin only)
+// ══════════════════════════════════════════════════════════════
+const CH_DAYS = ['Sun','Tue','Wed','Thu','Fri','Sat'] // Mon excluded — permanent holiday
+const CH_DAY_LABELS:Record<string,string> = { Sun:'Sunday', Tue:'Tuesday', Wed:'Wednesday', Thu:'Thursday', Fri:'Friday', Sat:'Saturday' }
+const CH_HOUR_OPTIONS = Array.from({length:15},(_,i)=>String(i+7).padStart(2,'0')+':00') // 07:00–21:00
+
+function CenterHoursTab({profile}:any){
+  const [hours,setHours]=useState<any[]>([])
+  const [loading,setLoading]=useState(true)
+  const [saving,setSaving]=useState(false)
+  const [saved,setSaved]=useState(false)
+
+  useEffect(()=>{ load() },[])
+  async function load(){
+    setLoading(true)
+    const r=await fetch('/api/center-hours')
+    const d=await r.json()
+    const existing=d.hours||[]
+    // Ensure all 6 working days have a row, default sensible hours if missing
+    const merged=CH_DAYS.map(day=>{
+      const found=existing.find((h:any)=>h.day_of_week===day)
+      if(found) return found
+      const isWeekend=day==='Sun'||day==='Sat'
+      return { day_of_week:day, open_time:isWeekend?'10:00':'15:00', close_time:'20:00', is_closed:false }
+    })
+    setHours(merged)
+    setLoading(false)
+  }
+
+  function updateDay(day:string,field:string,value:any){
+    setHours(hs=>hs.map(h=>h.day_of_week===day?{...h,[field]:value}:h))
+    setSaved(false)
+  }
+
+  async function save(){
+    setSaving(true)
+    const r=await fetch('/api/center-hours',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({hours})})
+    setSaving(false)
+    if(r.ok){ setSaved(true); setTimeout(()=>setSaved(false),3000) }
+  }
+
+  function applyToAll(template:any){
+    setHours(hs=>hs.map(h=>({...h,open_time:template.open_time,close_time:template.close_time,is_closed:template.is_closed})))
+    setSaved(false)
+  }
+
+  if(loading) return <div className="animate-fu p-10 text-center text-gray-400"><Loader2 className="w-6 h-6 animate-spin mx-auto mb-2"/>Loading center hours…</div>
+
+  return(
+    <div className="animate-fu max-w-3xl">
+      <div className="flex items-center justify-between mb-1">
+        <div>
+          <h1 className="text-xl font-semibold text-gray-900">Center Hours</h1>
+          <p className="text-sm text-gray-400 mt-0.5">Set opening hours per day — controls what slots appear in the calendar</p>
+        </div>
+        <button onClick={save} disabled={saving} className="btn-primary">
+          {saving?<Loader2 className="w-4 h-4 animate-spin"/>:saved?<CheckCircle className="w-4 h-4"/>:null}
+          {saving?'Saving…':saved?'Saved!':'Save Changes'}
+        </button>
+      </div>
+
+      {/* Monday holiday notice */}
+      <div className="mt-5 mb-4 flex items-center gap-3 px-4 py-3 bg-red-50 border border-red-100 rounded-xl">
+        <span className="text-xl">🚫</span>
+        <div>
+          <div className="text-sm font-semibold text-red-700">Monday — Permanently Closed</div>
+          <div className="text-xs text-red-500">The academy is closed every Monday. This cannot be changed here.</div>
+        </div>
+      </div>
+
+      {/* Quick templates */}
+      <div className="card p-4 mb-4">
+        <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2.5">Quick Apply</div>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={()=>applyToAll({open_time:'15:00',close_time:'20:00',is_closed:false})} className="btn btn-sm">3:00 PM – 8:00 PM (all days)</button>
+          <button onClick={()=>applyToAll({open_time:'10:00',close_time:'20:00',is_closed:false})} className="btn btn-sm">10:00 AM – 8:00 PM (all days)</button>
+          <button onClick={()=>applyToAll({open_time:'09:00',close_time:'18:00',is_closed:false})} className="btn btn-sm">9:00 AM – 6:00 PM (all days)</button>
+        </div>
+      </div>
+
+      {/* Per-day editor */}
+      <div className="card overflow-hidden">
+        {CH_DAYS.map((day,i)=>{
+          const h=hours.find(x=>x.day_of_week===day)
+          if(!h) return null
+          const oh=parseInt(h.open_time.split(':')[0])
+          const ch=parseInt(h.close_time.split(':')[0])
+          const hourCount=Math.max(0,ch-oh)
+          return(
+            <div key={day} className={clsx('flex items-center gap-4 px-5 py-4',i>0&&'border-t border-gray-100',h.is_closed&&'bg-gray-50/60')}>
+              <div className="w-28 flex-shrink-0">
+                <div className="font-semibold text-gray-900 text-sm">{CH_DAY_LABELS[day]}</div>
+                <div className="text-xs text-gray-400">{day==='Sun'||day==='Sat'?'Weekend':'Weekday'}</div>
+              </div>
+
+              <label className="flex items-center gap-1.5 flex-shrink-0 cursor-pointer">
+                <input type="checkbox" checked={!h.is_closed} onChange={e=>updateDay(day,'is_closed',!e.target.checked)} className="rounded border-gray-300 text-brand-500"/>
+                <span className="text-xs text-gray-500">Open</span>
+              </label>
+
+              {h.is_closed ? (
+                <div className="flex-1 text-sm text-gray-400 italic">Closed</div>
+              ) : (
+                <>
+                  <div className="flex items-center gap-2">
+                    <select className="input py-1.5 text-sm w-28" value={h.open_time.slice(0,5)} onChange={e=>updateDay(day,'open_time',e.target.value)}>
+                      {CH_HOUR_OPTIONS.map(t=><option key={t} value={t}>{t}</option>)}
+                    </select>
+                    <span className="text-gray-300 text-sm">to</span>
+                    <select className="input py-1.5 text-sm w-28" value={h.close_time.slice(0,5)} onChange={e=>updateDay(day,'close_time',e.target.value)}>
+                      {CH_HOUR_OPTIONS.map(t=><option key={t} value={t}>{t}</option>)}
+                    </select>
+                  </div>
+                  <div className="ml-auto flex-shrink-0 text-right">
+                    <div className="text-sm font-semibold text-brand-600">{hourCount>0?hourCount:0} slot{hourCount!==1?'s':''}</div>
+                    <div className="text-xs text-gray-400">1-hour classes</div>
+                  </div>
+                </>
+              )}
+            </div>
+          )
+        })}
+      </div>
+
+      <p className="text-xs text-gray-400 mt-3">Changes apply immediately to the calendar's Week/Day/Month views and the slot pickers in Add Class, Enrollment, and the Student Portal reschedule flow. All classes are fixed at 60 minutes — no 30-minute slots are shown.</p>
+    </div>
+  )
+}
+
+
 // ══════════════════════════════════════════════════════════════
 const GRADE_LEVELS = ['Beginner–Grade 2', 'Grade 3–5', 'Grade 6–8']
 const CLASSES_PM_OPTIONS = [4, 8, 12]
@@ -4432,9 +4594,20 @@ type EnrollStep = typeof ENROLLMENT_STEPS[number]
 
 function EnrollmentModal({ student, subjects, packages, schedules, onClose, reload }: any) {
   const [blockedSlots, setBlockedSlots] = useState<any[]>([])
+  const [centerHours, setCenterHours] = useState<any[]>([])
   useEffect(() => {
     sb().from('blocked_slots').select('*').then(({ data }: any) => setBlockedSlots(data || []))
+    sb().from('center_hours').select('*').then(({ data }: any) => setCenterHours(data || []))
   }, [])
+  function hourSlotsForDay(day:string):string[] {
+    const h = centerHours.find((c:any)=>c.day_of_week===day)
+    if (!h || h.is_closed) return []
+    const slots:string[] = []
+    const oh = parseInt(h.open_time.split(':')[0])
+    const ch = parseInt(h.close_time.split(':')[0])
+    for (let hr=oh; hr<ch; hr++) slots.push(`${String(hr).padStart(2,'0')}:00`)
+    return slots
+  }
   const supabase = sb()
   const isEdit = !!student
   const [step, setStep] = useState<EnrollStep>('Personal')
@@ -4554,7 +4727,7 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
       if (!scheduleId) {
         const { data: newCls } = await supabase
           .from('class_schedules')
-          .insert({ subject_id: primarySubjectId, day_of_week: p.enroll_day, start_time: p.enroll_time, duration_minutes: 45 })
+          .insert({ subject_id: primarySubjectId, day_of_week: p.enroll_day, start_time: p.enroll_time, duration_minutes: 60 })
           .select()
           .single()
         scheduleId = newCls?.id
@@ -4851,15 +5024,15 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
                 </div>
               </div>
 
-              {/* Free slot picker — now bookable */}
+              {/* Free slot picker — now bookable, based on center hours */}
               {p.subject_ids.length > 0 && (
                 <div>
-                  <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Select a Class Slot</div>
+                  <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Select a Class Slot (1 hour)</div>
                   <div className="space-y-3">
-                    {['Sun','Tue','Wed','Thu','Fri','Sat'].map(day => {
+                    {(centerHours.filter((h:any)=>!h.is_closed).map((h:any)=>h.day_of_week)).map((day:string) => {
                       const bookedSlots = schedules.filter((sc:any) => p.subject_ids.includes(sc.subject_id) && sc.day_of_week === day).map((sc:any) => sc.start_time?.slice(0,5))
                       const blockedSlotsForDay = (blockedSlots||[]).filter((b:any)=>b.day_of_week===day).map((b:any)=>b.start_time?.slice(0,5))
-                      const allSlots = ['09:00','09:30','10:00','10:30','11:00','11:30','12:00','12:30','14:00','14:30','15:00','15:30','16:00','16:30','17:00','17:30','18:00','18:30','19:00']
+                      const allSlots = hourSlotsForDay(day)
                       const freeSlots = allSlots.filter(t => !bookedSlots.includes(t) && !blockedSlotsForDay.includes(t))
                       if (!freeSlots.length && !bookedSlots.length) return null
                       return (
