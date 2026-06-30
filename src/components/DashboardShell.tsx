@@ -1276,6 +1276,239 @@ function SubjectsTab({subjects,profiles,students,fees,subjectTeachers,reload}:an
 }
 
 // ══════════════════════════════════════════════════════════════ SCHEDULE + EMAIL REMINDERS
+// ── Schedule view helpers (top-level to avoid JSX nesting errors) ──
+
+function renderWeekView(p:any){
+  const {visible,WORKING_DAYS,SLOT_TIMES,isBlocked,toggleBlock,isTeacher,
+         setReminderCls,setReminderOpen,setSentResult,subById,profiles} = p
+  const todayAbbr = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date().getDay()]
+  return (
+    <div className="card overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs" style={{minWidth:700}}>
+          <thead>
+            <tr>
+              <th className="bg-gray-50 border-b border-r border-gray-100 px-2 py-2 text-gray-400 font-mono w-14 text-center">Time</th>
+              {WORKING_DAYS.map((d:string)=>(
+                <th key={d} className={clsx('bg-gray-50 border-b border-gray-100 px-2 py-2 text-center font-semibold text-xs',
+                  d===todayAbbr?'text-brand-600 bg-brand-50/50':'text-gray-500')}>
+                  <div>{d}</div>
+                  {d===todayAbbr&&<div className="text-xs text-brand-400 font-normal">Today</div>}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {SLOT_TIMES.map((time:string)=>{
+              const hasAny=WORKING_DAYS.some((d:string)=>visible.some((sc:any)=>sc.day_of_week===d&&sc.start_time?.slice(0,5)===time))
+              const isHour=time.endsWith(':00')
+              if(!isHour&&!hasAny) return null
+              return (
+                <tr key={time} className={isHour?'border-t border-gray-100':''}>
+                  <td className={clsx('border-r border-gray-100 px-2 text-center font-mono',isHour?'py-1.5 text-gray-400':'py-0.5 text-gray-300 text-xs')}>
+                    {isHour?time:<span className="opacity-50">{time.slice(3)}</span>}
+                  </td>
+                  {WORKING_DAYS.map((day:string)=>{
+                    const cls=visible.filter((sc:any)=>sc.day_of_week===day&&sc.start_time?.slice(0,5)===time)
+                    const blocked=isBlocked(day,time)
+                    return (
+                      <td key={day}
+                        className={clsx('px-1 py-0.5 align-top transition-colors group',
+                          blocked?'bg-red-50':(!cls.length&&!isTeacher)?'hover:bg-gray-50/80 cursor-pointer':'')}
+                        style={{minHeight:28}}
+                        onClick={()=>{ if(!cls.length&&!isTeacher) toggleBlock(day,time) }}
+                        title={(!cls.length&&!isTeacher)?(blocked?'Click to unblock':'Click to block slot'):''}
+                      >
+                        {blocked&&!cls.length&&(
+                          <div className="rounded-lg px-2 py-1.5 mb-0.5 text-xs bg-red-100 text-red-400 border border-red-200 flex items-center gap-1">
+                            <span>🚫</span>
+                            <span className="font-medium">Blocked</span>
+                            {!isTeacher&&(
+                              <button
+                                onClick={e=>{e.stopPropagation();toggleBlock(day,time)}}
+                                className="ml-auto text-red-300 hover:text-red-500 text-xs">✕</button>
+                            )}
+                          </div>
+                        )}
+                        {!blocked&&!cls.length&&!isTeacher&&(
+                          <div className="rounded px-1 py-1 text-xs text-gray-200 opacity-0 group-hover:opacity-100 transition-opacity text-center">+ block</div>
+                        )}
+                        {cls.map((c:any)=>{
+                          const sub=subById(c.subject_id)
+                          const stuCount=(c.schedule_students||[]).length
+                          const teacher=profiles.find((pr:any)=>pr.id===sub?.teacher_id)
+                          if(!sub) return null
+                          return (
+                            <div key={c.id}
+                              className={clsx('rounded-lg px-2 py-1.5 mb-0.5 text-xs font-medium cursor-pointer hover:opacity-80 border',colorCell[sub.color]||colorCell.violet)}
+                              onClick={e=>{e.stopPropagation();setReminderCls(c);setReminderOpen(true);setSentResult('')}}>
+                              <div className="font-semibold truncate">{sub.name}</div>
+                              <div className="opacity-70">{c.duration_minutes}m · {stuCount} stu</div>
+                              {teacher&&<div className="opacity-60 truncate">{teacher.full_name.split(' ')[0]}</div>}
+                            </div>
+                          )
+                        })}
+                      </td>
+                    )
+                  })}
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function renderDayView(p:any){
+  const {visible,selectedDate,setSelectedDate,isTeacher,subById,profiles,
+         students,setReminderCls,setReminderOpen,setSentResult,del} = p
+  const dayNames=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
+  const dayName=dayNames[selectedDate.getDay()]
+  const isHoliday=dayName==='Mon'
+  const dayClasses=[...visible].filter((sc:any)=>sc.day_of_week===dayName)
+    .sort((a:any,b:any)=>a.start_time?.localeCompare(b.start_time))
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <button onClick={()=>{const d=new Date(selectedDate);d.setDate(d.getDate()-1);setSelectedDate(d)}} className="btn btn-sm">← Prev</button>
+        <div className="text-center">
+          <div className="font-semibold text-gray-900">{selectedDate.toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long'})}</div>
+          {isHoliday&&<div className="text-xs text-red-500 mt-0.5">🚫 Monday — Holiday</div>}
+        </div>
+        <button onClick={()=>{const d=new Date(selectedDate);d.setDate(d.getDate()+1);setSelectedDate(d)}} className="btn btn-sm">Next →</button>
+      </div>
+      {isHoliday?(
+        <div className="card p-12 text-center">
+          <div className="text-4xl mb-3">🎉</div>
+          <h3 className="font-semibold text-gray-900 mb-1">Monday — Holiday</h3>
+          <p className="text-sm text-gray-400">No classes on Mondays.</p>
+        </div>
+      ):dayClasses.length===0?(
+        <div className="card p-12 text-center text-gray-300">
+          <CalendarDays className="w-10 h-10 mx-auto mb-3 opacity-30"/>
+          <p>No classes on {dayName}</p>
+        </div>
+      ):(
+        <div className="space-y-2">
+          {dayClasses.map((c:any)=>{
+            const sub=subById(c.subject_id)
+            const teacher=profiles.find((pr:any)=>pr.id===sub?.teacher_id)
+            const stuNames=(c.schedule_students||[])
+              .map((ss:any)=>students.find((st:any)=>st.id===ss.student_id))
+              .filter(Boolean)
+            return (
+              <div key={c.id} className="card p-4">
+                <div className="flex items-start justify-between mb-3">
+                  <div className="flex items-center gap-3">
+                    <div className={clsx('w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0',colorBadge[sub?.color]||colorBadge.violet)}>
+                      <span className="font-bold text-sm">{sub?.code}</span>
+                    </div>
+                    <div>
+                      <div className="font-semibold text-gray-900">{sub?.name}</div>
+                      <div className="text-xs text-gray-400">{c.start_time?.slice(0,5)} · {c.duration_minutes} min</div>
+                      {teacher&&<div className="text-xs text-gray-400 mt-0.5">👤 {teacher.full_name}</div>}
+                    </div>
+                  </div>
+                  <div className="flex gap-1">
+                    <button onClick={()=>{setReminderCls(c);setReminderOpen(true);setSentResult('')}} className="btn btn-sm text-brand-600 border-brand-200">
+                      <Mail className="w-3 h-3"/>
+                    </button>
+                    {!isTeacher&&<button onClick={()=>del(c.id)} className="btn btn-sm btn-danger"><Trash2 className="w-3 h-3"/></button>}
+                  </div>
+                </div>
+                <div className="border-t border-gray-100 pt-2">
+                  <div className="text-xs text-gray-400 mb-1.5">Students ({stuNames.length})</div>
+                  <div className="flex flex-wrap gap-1">
+                    {stuNames.map((s:any)=>(
+                      <span key={s.id} className="badge bg-gray-100 text-gray-600 text-xs">{s.full_name}</span>
+                    ))}
+                    {!stuNames.length&&<span className="text-xs text-gray-300">No students assigned</span>}
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function renderMonthView(p:any){
+  const {visible,selectedDate,setSelectedDate,setViewMode,subById}=p
+  const year=selectedDate.getFullYear()
+  const month=selectedDate.getMonth()
+  const firstDay=new Date(year,month,1).getDay()
+  const daysInMonth=new Date(year,month+1,0).getDate()
+  const today=new Date()
+  const dayNames=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
+  const cells:Array<number|null>=[
+    ...Array(firstDay).fill(null),
+    ...Array.from({length:daysInMonth},(_,i)=>i+1)
+  ]
+  while(cells.length%7!==0) cells.push(null)
+
+  function classesOnDay(dayNum:number){
+    const dn=dayNames[new Date(year,month,dayNum).getDay()]
+    return visible.filter((sc:any)=>sc.day_of_week===dn)
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <button onClick={()=>{const d=new Date(selectedDate);d.setMonth(d.getMonth()-1);setSelectedDate(d)}} className="btn btn-sm">← Prev</button>
+        <div className="font-semibold text-gray-900">{selectedDate.toLocaleDateString('en-IN',{month:'long',year:'numeric'})}</div>
+        <button onClick={()=>{const d=new Date(selectedDate);d.setMonth(d.getMonth()+1);setSelectedDate(d)}} className="btn btn-sm">Next →</button>
+      </div>
+      <div className="card overflow-hidden">
+        <div className="grid grid-cols-7 border-b border-gray-100">
+          {dayNames.map(d=>(
+            <div key={d} className={clsx('px-2 py-2 text-xs font-semibold text-center',d==='Mon'?'text-red-400 bg-red-50/50':'text-gray-400 bg-gray-50')}>
+              {d}
+              {d==='Mon'&&<span className="block text-xs font-normal text-red-300">Holiday</span>}
+            </div>
+          ))}
+        </div>
+        <div className="grid grid-cols-7">
+          {cells.map((day,i)=>{
+            if(!day) return <div key={i} className="border-b border-r border-gray-50 min-h-[80px] bg-gray-50/30"/>
+            const isToday=day===today.getDate()&&month===today.getMonth()&&year===today.getFullYear()
+            const dn=dayNames[new Date(year,month,day).getDay()]
+            const isHoliday=dn==='Mon'
+            const dayCls=classesOnDay(day)
+            return (
+              <div key={i}
+                className={clsx('border-b border-r border-gray-100 min-h-[80px] p-1.5 cursor-pointer transition-colors',
+                  isHoliday?'bg-red-50/30':isToday?'bg-brand-50/30':'hover:bg-gray-50/50',
+                  (i+1)%7===0?'border-r-0':'')}
+                onClick={()=>{ if(!isHoliday){setSelectedDate(new Date(year,month,day));setViewMode('day')} }}>
+                <div className={clsx('text-xs font-semibold mb-1 w-6 h-6 flex items-center justify-center rounded-full',
+                  isToday?'bg-brand-500 text-white':isHoliday?'text-red-300':'text-gray-600')}>
+                  {day}
+                </div>
+                {isHoliday&&<div className="text-xs text-red-300">Closed</div>}
+                {dayCls.slice(0,3).map((c:any)=>{
+                  const sub=subById(c.subject_id)
+                  if(!sub) return null
+                  return (
+                    <div key={c.id} className={clsx('text-xs px-1 py-0.5 rounded mb-0.5 truncate',colorCell[sub.color]||colorCell.violet)}>
+                      {c.start_time?.slice(0,5)} {sub.code}
+                    </div>
+                  )
+                })}
+                {dayCls.length>3&&<div className="text-xs text-gray-400">+{String(dayCls.length-3)} more</div>}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
 function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}:any){
   const supabase=sb()
   const isTeacher=profile.role==='teacher'
@@ -1290,11 +1523,41 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
   const [open,setOpen]=useState(false)
   const [reminderOpen,setReminderOpen]=useState(false)
   const [reminderCls,setReminderCls]=useState<any>(null)
-  const [form,setForm]=useState({subject_id:'',day_of_week:'Sun',start_time:'10:00',duration_minutes:45,student_ids:[] as string[]})
+  const [form,setForm]=useState({subject_id:'',day_of_week:'Sun',start_time:'10:00',duration_minutes:45,student_ids:[] as string[],studentSearch:''})
   const [busy,setBusy]=useState(false)
   const [reminderMsg,setReminderMsg]=useState('')
   const [sending,setSending]=useState(false)
   const [sentResult,setSentResult]=useState('')
+
+  // Blocked slots
+  const [blockedSlots,setBlockedSlots]=useState<any[]>([])
+  const [blockModal,setBlockModal]=useState<{day:string,time:string}|null>(null)
+  const [blockReason,setBlockReason]=useState('')
+  const [blockBusy,setBlockBusy]=useState(false)
+
+  useEffect(()=>{ loadBlocked() },[])
+  async function loadBlocked(){
+    const{data}=await supabase.from('blocked_slots').select('*')
+    setBlockedSlots(data||[])
+  }
+  function isBlocked(day:string,time:string){
+    return blockedSlots.some(b=>b.day_of_week===day&&b.start_time?.slice(0,5)===time)
+  }
+  async function toggleBlock(day:string,time:string){
+    const existing=blockedSlots.find(b=>b.day_of_week===day&&b.start_time?.slice(0,5)===time)
+    if(existing){
+      await supabase.from('blocked_slots').delete().eq('id',existing.id)
+    } else {
+      setBlockModal({day,time});setBlockReason('')
+    }
+    loadBlocked()
+  }
+  async function confirmBlock(){
+    if(!blockModal)return
+    setBlockBusy(true)
+    await supabase.from('blocked_slots').upsert({day_of_week:blockModal.day,start_time:blockModal.time,reason:blockReason||null,created_by:profile.id},{onConflict:'day_of_week,start_time'})
+    setBlockBusy(false);setBlockModal(null);loadBlocked()
+  }
 
   const WORKING_DAYS = ['Sun','Tue','Wed','Thu','Fri','Sat'] // Mon is holiday
   const DAY_LABELS: Record<string,string> = { Sun:'Sunday', Tue:'Tuesday', Wed:'Wednesday', Thu:'Thursday', Fri:'Friday', Sat:'Saturday' }
@@ -1330,202 +1593,7 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
     setSending(false);setSentResult(d.ok?`✓ Sent ${d.sent} emails`:`Error: ${d.error}`)
   }
 
-  // ── WEEKLY VIEW ──────────────────────────────────────────────
-  function WeekView() {
-    return (
-      <div className="card overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs" style={{minWidth:700}}>
-            <thead>
-              <tr>
-                <th className="bg-gray-50 border-b border-r border-gray-100 px-2 py-2 text-gray-400 font-mono w-14 text-center">Time</th>
-                {WORKING_DAYS.map(d=>(
-                  <th key={d} className={clsx('bg-gray-50 border-b border-gray-100 px-2 py-2 text-center font-semibold text-xs',
-                    d===(['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date().getDay()])?'text-brand-600 bg-brand-50/50':'text-gray-500'
-                  )}>
-                    <div>{d}</div>
-                    {d===(['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date().getDay()])&&<div className="text-xs text-brand-400 font-normal">Today</div>}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {SLOT_TIMES.map((time,ti)=>{
-                const hasAny = WORKING_DAYS.some(d=>visible.some((sc:any)=>sc.day_of_week===d&&sc.start_time?.slice(0,5)===time))
-                // Only show 30-min slots that have content, or on-the-hour slots
-                const isHour = time.endsWith(':00')
-                if (!isHour && !hasAny) return null
-                return(
-                  <tr key={time} className={isHour?'border-t border-gray-100':''}>
-                    <td className={clsx('border-r border-gray-100 px-2 text-center font-mono text-gray-400', isHour?'py-1.5':'py-0.5 text-gray-300 text-xs')}>
-                      {isHour?time:<span className="text-xs opacity-50">{time.slice(3)}</span>}
-                    </td>
-                    {WORKING_DAYS.map(day=>{
-                      const cls=visible.filter((sc:any)=>sc.day_of_week===day&&sc.start_time?.slice(0,5)===time)
-                      return(
-                        <td key={day} className="px-1 py-0.5 align-top" style={{minHeight:28}}>
-                          {cls.map((c:any)=>{
-                            const sub=subById(c.subject_id)
-                            const stuCount=(c.schedule_students||[]).length
-                            const teacher=profiles.find((p:any)=>p.id===sub?.teacher_id)
-                            return sub?(
-                              <div key={c.id}
-                                className={clsx('rounded-lg px-2 py-1.5 mb-0.5 text-xs font-medium cursor-pointer hover:opacity-80 border',colorCell[sub.color]||colorCell.violet)}
-                                onClick={()=>{setReminderCls(c);setReminderOpen(true);setSentResult('')}}>
-                                <div className="font-semibold truncate">{sub.name}</div>
-                                <div className="opacity-70 text-xs">{c.duration_minutes}m · {stuCount} stu</div>
-                                {teacher&&<div className="opacity-60 text-xs truncate">{teacher.full_name.split(' ')[0]}</div>}
-                              </div>
-                            ):null
-                          })}
-                        </td>
-                      )
-                    })}
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    )
-  }
-
-  // ── DAILY VIEW ───────────────────────────────────────────────
-  function DayView() {
-    const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
-    const dayName = dayNames[selectedDate.getDay()]
-    const dayClasses = visible.filter((sc:any)=>sc.day_of_week===dayName).sort((a:any,b:any)=>a.start_time?.localeCompare(b.start_time))
-    const isHoliday = dayName === 'Mon'
-
-    return (
-      <div className="space-y-3">
-        {/* Date nav */}
-        <div className="flex items-center justify-between">
-          <button onClick={()=>{const d=new Date(selectedDate);d.setDate(d.getDate()-1);setSelectedDate(d)}} className="btn btn-sm">← Prev</button>
-          <div className="text-center">
-            <div className="font-semibold text-gray-900">{selectedDate.toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long'})}</div>
-            {isHoliday && <div className="text-xs text-red-500 mt-0.5">🚫 Monday — Holiday</div>}
-          </div>
-          <button onClick={()=>{const d=new Date(selectedDate);d.setDate(d.getDate()+1);setSelectedDate(d)}} className="btn btn-sm">Next →</button>
-        </div>
-
-        {isHoliday ? (
-          <div className="card p-12 text-center">
-            <div className="text-4xl mb-3">🎉</div>
-            <h3 className="font-semibold text-gray-900 mb-1">Monday — Holiday</h3>
-            <p className="text-sm text-gray-400">No classes on Mondays. The academy is closed.</p>
-          </div>
-        ) : dayClasses.length === 0 ? (
-          <div className="card p-12 text-center text-gray-300">
-            <CalendarDays className="w-10 h-10 mx-auto mb-3 opacity-30"/>
-            <p>No classes on {dayName}</p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {dayClasses.map((c:any)=>{
-              const sub=subById(c.subject_id)
-              const teacher=profiles.find((p:any)=>p.id===sub?.teacher_id)
-              const stuCount=(c.schedule_students||[]).length
-              const stuNames=(c.schedule_students||[]).map((ss:any)=>students.find((st:any)=>st.id===ss.student_id)).filter(Boolean)
-              return(
-                <div key={c.id} className="card p-4">
-                  <div className="flex items-start justify-between mb-3">
-                    <div className="flex items-center gap-3">
-                      <div className={clsx('w-3 w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0', colorBadge[sub?.color]||colorBadge.violet)}>
-                        <span className="font-bold text-sm">{sub?.code}</span>
-                      </div>
-                      <div>
-                        <div className="font-semibold text-gray-900">{sub?.name}</div>
-                        <div className="text-xs text-gray-400">{c.start_time?.slice(0,5)} · {c.duration_minutes} min</div>
-                        {teacher&&<div className="text-xs text-gray-400 mt-0.5">👤 {teacher.full_name}</div>}
-                      </div>
-                    </div>
-                    <div className="flex gap-1">
-                      <button onClick={()=>{setReminderCls(c);setReminderOpen(true);setSentResult('')}} className="btn btn-sm text-brand-600 border-brand-200"><Mail className="w-3 h-3"/></button>
-                      {!isTeacher&&<button onClick={()=>del(c.id)} className="btn btn-sm btn-danger"><Trash2 className="w-3 h-3"/></button>}
-                    </div>
-                  </div>
-                  <div className="border-t border-gray-100 pt-2">
-                    <div className="text-xs text-gray-400 mb-1.5">Students ({stuCount})</div>
-                    <div className="flex flex-wrap gap-1">
-                      {stuNames.map((s:any)=><span key={s.id} className="badge bg-gray-100 text-gray-600 text-xs">{s.full_name}</span>)}
-                      {!stuNames.length&&<span className="text-xs text-gray-300">No students assigned</span>}
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        )}
-      </div>
-    )
-  }
-
-  // ── MONTHLY VIEW ─────────────────────────────────────────────
-  function MonthView() {
-    const year = selectedDate.getFullYear()
-    const month = selectedDate.getMonth()
-    const firstDay = new Date(year, month, 1).getDay() // 0=Sun
-    const daysInMonth = new Date(year, month + 1, 0).getDate()
-    const today = new Date()
-
-    const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
-    const cells: (number|null)[] = [...Array(firstDay).fill(null), ...Array.from({length:daysInMonth},(_,i)=>i+1)]
-    while(cells.length % 7 !== 0) cells.push(null)
-
-    function classesOnDay(dayNum: number) {
-      const dayName = dayNames[new Date(year, month, dayNum).getDay()]
-      return visible.filter((sc:any)=>sc.day_of_week===dayName)
-    }
-
-    return (
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <button onClick={()=>{const d=new Date(selectedDate);d.setMonth(d.getMonth()-1);setSelectedDate(d)}} className="btn btn-sm">← Prev</button>
-          <div className="font-semibold text-gray-900">{selectedDate.toLocaleDateString('en-IN',{month:'long',year:'numeric'})}</div>
-          <button onClick={()=>{const d=new Date(selectedDate);d.setMonth(d.getMonth()+1);setSelectedDate(d)}} className="btn btn-sm">Next →</button>
-        </div>
-        <div className="card overflow-hidden">
-          <div className="grid grid-cols-7 border-b border-gray-100">
-            {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d=>(
-              <div key={d} className={clsx('px-2 py-2 text-xs font-semibold text-center', d==='Mon'?'text-red-400 bg-red-50/50':'text-gray-400 bg-gray-50')}>
-                {d}{d==='Mon'&&<span className="block text-xs font-normal text-red-300">Holiday</span>}
-              </div>
-            ))}
-          </div>
-          <div className="grid grid-cols-7">
-            {cells.map((day, i) => {
-              if (!day) return <div key={i} className="border-b border-r border-gray-50 min-h-[80px] bg-gray-50/30"/>
-              const isToday = day===today.getDate()&&month===today.getMonth()&&year===today.getFullYear()
-              const dayName = dayNames[new Date(year,month,day).getDay()]
-              const isHoliday = dayName === 'Mon'
-              const dayCls = classesOnDay(day)
-              return(
-                <div key={i} className={clsx('border-b border-r border-gray-100 min-h-[80px] p-1.5 cursor-pointer transition-colors',
-                  isHoliday?'bg-red-50/30':isToday?'bg-brand-50/30':'hover:bg-gray-50/50',
-                  (i+1)%7===0?'border-r-0':''
-                )}
-                onClick={()=>{if(!isHoliday){setSelectedDate(new Date(year,month,day));setViewMode('day')}}}>
-                  <div className={clsx('text-xs font-semibold mb-1 w-6 h-6 flex items-center justify-center rounded-full',
-                    isToday?'bg-brand-500 text-white':isHoliday?'text-red-300':'text-gray-600'
-                  )}>{day}</div>
-                  {isHoliday&&<div className="text-xs text-red-300">Closed</div>}
-                  {dayCls.slice(0,3).map((c:any)=>{
-                    const sub=subById(c.subject_id)
-                    return sub?<div key={c.id} className={clsx('text-xs px-1 py-0.5 rounded mb-0.5 truncate',colorCell[sub.color]||colorCell.violet)}>
-                      {c.start_time?.slice(0,5)} {sub.code}
-                    </div>:null
-                  })}
-                  {dayCls.length>3&&<div className="text-xs text-gray-400">+{dayCls.length-3} more</div>}
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      </div>
-    )
-  }
+  // ── View rendering (inline in JSX below) ──────────────────
 
   return(
     <div className="animate-fu">
@@ -1580,9 +1648,9 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
       </div>
 
       {/* View content */}
-      {viewMode==='week'&&<WeekView/>}
-      {viewMode==='day'&&<DayView/>}
-      {viewMode==='month'&&<MonthView/>}
+      {viewMode==='week'&&renderWeekView({visible,WORKING_DAYS,SLOT_TIMES,isBlocked,toggleBlock,isTeacher,setReminderCls,setReminderOpen,setSentResult,subById,profiles,blockedSlots})}
+      {viewMode==='day'&&renderDayView({visible,selectedDate,setSelectedDate,WORKING_DAYS,DAY_LABELS,isTeacher,subById,profiles,students,setReminderCls,setReminderOpen,setSentResult,del})}
+      {viewMode==='month'&&renderMonthView({visible,selectedDate,setSelectedDate,setViewMode,subById})}
 
       {/* List view below week */}
       {viewMode==='week'&&(
@@ -1665,6 +1733,25 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
         })()}
       </Modal>
 
+      {/* Block slot reason modal */}
+      <Modal open={!!blockModal} onClose={()=>setBlockModal(null)} title={`Block Slot — ${blockModal?.day} at ${blockModal?.time}`}>
+        <div className="space-y-4">
+          <div className="bg-red-50 border border-red-100 rounded-xl p-3 text-sm text-red-700">
+            This will prevent this time slot from being used for any class bookings.
+          </div>
+          <div>
+            <label className="label">Reason (optional)</label>
+            <input className="input" value={blockReason} onChange={e=>setBlockReason(e.target.value)} placeholder="e.g. Faculty unavailable, maintenance, holiday…" autoFocus/>
+          </div>
+          <div className="flex justify-end gap-2">
+            <button className="btn" onClick={()=>setBlockModal(null)}>Cancel</button>
+            <button className="btn-primary bg-red-500 hover:bg-red-600 border-red-500" onClick={confirmBlock} disabled={blockBusy}>
+              {blockBusy?<Loader2 className="w-4 h-4 animate-spin"/>:null}🚫 Block this slot
+            </button>
+          </div>
+        </div>
+      </Modal>
+
       {/* Add class modal */}
       {!isTeacher&&<Modal open={open} onClose={()=>setOpen(false)} title="Schedule Class" wide>
         <div className="space-y-4">
@@ -1700,6 +1787,7 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
           {form.subject_id&&(()=>{
             const bookedSlots=schedules.filter((sc:any)=>sc.subject_id===form.subject_id&&sc.day_of_week===form.day_of_week).map((sc:any)=>sc.start_time?.slice(0,5))
             const conflictSlots=schedules.filter((sc:any)=>sc.day_of_week===form.day_of_week).map((sc:any)=>sc.start_time?.slice(0,5))
+            const blockedForDay=blockedSlots.filter((b:any)=>b.day_of_week===form.day_of_week).map((b:any)=>b.start_time?.slice(0,5))
             return(
               <div>
                 <div className="label mb-2">Slot availability for {form.day_of_week}</div>
@@ -1707,25 +1795,31 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
                   {SLOT_TIMES.map(t=>{
                     const isBooked=bookedSlots.includes(t)
                     const hasConflict=conflictSlots.includes(t)
+                    const isBlockedSlot=blockedForDay.includes(t)
                     const isSelected=form.start_time===t
+                    const disabled=isBooked||isBlockedSlot
+                    const blockedInfo=blockedSlots.find((b:any)=>b.day_of_week===form.day_of_week&&b.start_time?.slice(0,5)===t)
                     return(
                       <button key={t} type="button"
-                        onClick={()=>!isBooked&&setForm((f:any)=>({...f,start_time:t}))}
+                        onClick={()=>!disabled&&setForm((f:any)=>({...f,start_time:t}))}
+                        title={isBlockedSlot?`Blocked${blockedInfo?.reason?': '+blockedInfo.reason:''}`:isBooked?'Already booked':''}
                         className={clsx('px-2.5 py-1 rounded-lg text-xs font-mono font-medium border transition-all',
+                          isBlockedSlot?'bg-gray-100 text-gray-300 border-gray-100 cursor-not-allowed':
                           isBooked?'bg-red-50 text-red-400 border-red-100 cursor-not-allowed line-through':
                           isSelected?'bg-brand-500 text-white border-brand-500':
-                          hasConflict?'bg-amber-50 text-amber-600 border-amber-100':
+                          hasConflict?'bg-amber-50 text-amber-600 border-amber-100 hover:bg-amber-100 cursor-pointer':
                           'bg-emerald-50 text-emerald-700 border-emerald-100 hover:bg-emerald-100 cursor-pointer'
                         )}>
-                        {t}
+                        {isBlockedSlot?'🚫 ':''}{t}
                       </button>
                     )
                   })}
                 </div>
-                <div className="flex gap-3 mt-2 text-xs text-gray-400">
+                <div className="flex gap-3 mt-2 text-xs text-gray-400 flex-wrap">
                   <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-emerald-100 inline-block"/>Free</span>
                   <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-amber-100 inline-block"/>Other class</span>
-                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-red-100 inline-block"/>Booked for this subject</span>
+                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-red-100 inline-block"/>Booked for subject</span>
+                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-gray-100 inline-block"/>🚫 Blocked</span>
                 </div>
               </div>
             )
@@ -1733,16 +1827,42 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
 
           <div>
             <label className="label">Assign Students</label>
-            <div className="grid grid-cols-2 gap-1.5 mt-1 max-h-40 overflow-y-auto">
-              {students.map((s:any)=>(
-                <label key={s.id} className="flex items-center gap-2 text-sm cursor-pointer p-1.5 rounded-lg hover:bg-gray-50">
-                  <input type="checkbox" checked={form.student_ids.includes(s.id)}
-                    onChange={()=>setForm((f:any)=>({...f,student_ids:f.student_ids.includes(s.id)?f.student_ids.filter((x:string)=>x!==s.id):[...f.student_ids,s.id]}))}
-                    className="rounded border-gray-300"/>
-                  <span className="truncate">{s.full_name}</span>
-                </label>
-              ))}
+            <div className="relative mb-2">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400"/>
+              <input
+                className="input pl-8 py-1.5 text-sm"
+                placeholder="Search student by name…"
+                value={form.studentSearch||''}
+                onChange={e=>setForm((f:any)=>({...f,studentSearch:e.target.value}))}
+              />
             </div>
+            <div className="grid grid-cols-2 gap-1 max-h-48 overflow-y-auto border border-gray-100 rounded-xl p-1">
+              {students
+                .filter((s:any)=>s.status!=='Blocked')
+                .filter((s:any)=>!form.studentSearch||(s.full_name||'').toLowerCase().includes((form.studentSearch||'').toLowerCase()))
+                .map((s:any)=>{
+                  const st=studentStatusStyle(s.status||'Active')
+                  return(
+                    <label key={s.id} className="flex items-center gap-2 text-sm cursor-pointer p-1.5 rounded-lg hover:bg-gray-50">
+                      <input type="checkbox" checked={form.student_ids.includes(s.id)}
+                        onChange={()=>setForm((f:any)=>({...f,student_ids:f.student_ids.includes(s.id)?f.student_ids.filter((x:string)=>x!==s.id):[...f.student_ids,s.id]}))}
+                        className="rounded border-gray-300"/>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-medium">{s.full_name}</div>
+                        <div className="flex items-center gap-1 mt-0.5">
+                          <div className={clsx('w-1.5 h-1.5 rounded-full flex-shrink-0',st.dot)}/>
+                          <span className="text-xs text-gray-400">{s.status||'Active'}</span>
+                        </div>
+                      </div>
+                    </label>
+                  )
+                })
+              }
+              {students.filter((s:any)=>s.status!=='Blocked').filter((s:any)=>!form.studentSearch||(s.full_name||'').toLowerCase().includes((form.studentSearch||'').toLowerCase())).length===0&&(
+                <div className="col-span-2 py-4 text-center text-xs text-gray-400">No students found</div>
+              )}
+            </div>
+            {form.student_ids.length>0&&<div className="text-xs text-brand-600 mt-1">{form.student_ids.length} student{form.student_ids.length!==1?'s':''} selected</div>}
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <button className="btn" onClick={()=>setOpen(false)}>Cancel</button>
