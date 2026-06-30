@@ -81,6 +81,94 @@ function PayModal({ payment, onClose }: { payment: any, onClose: () => void }) {
   )
 }
 
+// ── Reschedule Request Modal ──────────────────────────────────
+const RESCHED_DAYS = ['Sun','Tue','Wed','Thu','Fri','Sat']
+const RESCHED_DAY_LABELS: Record<string,string> = { Sun:'Sunday', Tue:'Tuesday', Wed:'Wednesday', Thu:'Thursday', Fri:'Friday', Sat:'Saturday' }
+
+function RescheduleModal({ modal, setModal, onSubmit, busy }: { modal: any, setModal: any, onSubmit: () => void, busy: boolean }) {
+  const cls = modal.cls
+  const slotsByDay: Record<string, any[]> = {}
+  RESCHED_DAYS.forEach(d => { slotsByDay[d] = modal.freeSlots.filter((s: any) => s.day === d) })
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={() => setModal(null)}>
+      <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-2xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="font-bold text-gray-900">Reschedule Class</h3>
+            <p className="text-sm text-gray-500">{cls.subjects?.name} · Currently {cls.day_of_week} {cls.start_time?.slice(0,5)}</p>
+          </div>
+          <button onClick={() => setModal(null)} className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-100 text-gray-500"><X className="w-4 h-4"/></button>
+        </div>
+
+        {modal.error && <div className="mb-4 px-3 py-2.5 bg-red-50 text-red-600 text-sm rounded-xl border border-red-100">{modal.error}</div>}
+
+        {modal.loading ? (
+          <div className="py-12 text-center"><Loader2 className="w-6 h-6 animate-spin text-purple-500 mx-auto mb-2"/><div className="text-sm text-gray-400">Loading available slots…</div></div>
+        ) : (
+          <>
+            <div className="space-y-4 mb-5">
+              {RESCHED_DAYS.map(day => {
+                const free = slotsByDay[day]?.filter(s => s.status === 'free') || []
+                if (!free.length) return null
+                return (
+                  <div key={day}>
+                    <div className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-1.5">{RESCHED_DAY_LABELS[day]}</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {free.map((s: any) => {
+                        const selected = modal.selectedDay === day && modal.selectedTime === s.time
+                        return (
+                          <button key={s.time}
+                            onClick={() => setModal((m: any) => ({ ...m, selectedDay: day, selectedTime: s.time, error: '' }))}
+                            className={clx('px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all',
+                              selected ? 'bg-purple-600 text-white border-purple-600' : 'bg-emerald-50 text-emerald-700 border-emerald-100 active:bg-emerald-100'
+                            )}>
+                            {s.time}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )
+              })}
+              {!modal.freeSlots.some((s: any) => s.status === 'free') && (
+                <div className="text-center text-sm text-gray-400 py-6">No free slots available right now. Please check back later or contact the academy.</div>
+              )}
+            </div>
+
+            {modal.selectedDay && (
+              <div className="bg-purple-50 border border-purple-200 rounded-xl p-3 mb-4 text-sm text-purple-700">
+                Requesting: <strong>{RESCHED_DAY_LABELS[modal.selectedDay]} at {modal.selectedTime}</strong>
+              </div>
+            )}
+
+            <div className="mb-5">
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">Reason (optional)</label>
+              <textarea
+                className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                rows={2}
+                placeholder="e.g. School exam clash this week"
+                value={modal.reason}
+                onChange={e => setModal((m: any) => ({ ...m, reason: e.target.value }))}
+              />
+            </div>
+
+            <button
+              onClick={onSubmit}
+              disabled={busy || !modal.selectedDay || !modal.selectedTime}
+              className="w-full bg-purple-600 text-white py-3.5 rounded-2xl font-bold text-sm disabled:opacity-40 active:bg-purple-700 flex items-center justify-center gap-2"
+            >
+              {busy ? <Loader2 className="w-4 h-4 animate-spin"/> : null}
+              {busy ? 'Submitting…' : 'Submit Reschedule Request'}
+            </button>
+            <p className="text-center text-xs text-gray-400 mt-3">The academy will review and confirm your new slot.</p>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Main Portal ───────────────────────────────────────────────
 export default function StudentPortal() {
   const [screen, setScreen] = useState<'login'|'otp'|'portal'>('login')
@@ -98,6 +186,8 @@ export default function StudentPortal() {
   const [err, setErr] = useState('')
   const [payModal, setPayModal] = useState<any>(null)
   const [devOtp, setDevOtp] = useState('')
+  const [myRequests, setMyRequests] = useState<any[]>([])
+  const [rescheduleModal, setRescheduleModal] = useState<any>(null)
 
   // Restore session from localStorage
   useEffect(() => {
@@ -111,20 +201,48 @@ export default function StudentPortal() {
   async function loadPortal(tok: string) {
     setBusy(true)
     try {
-      const [me, pay, att, sch] = await Promise.all([
+      const [me, pay, att, sch, rr] = await Promise.all([
         fetch(`/api/student/auth?action=me&token=${tok}`).then(r => r.json()),
         fetch(`/api/student/auth?action=payments&token=${tok}`).then(r => r.json()),
         fetch(`/api/student/auth?action=attendance&token=${tok}`).then(r => r.json()),
         fetch(`/api/student/auth?action=schedule&token=${tok}`).then(r => r.json()),
+        fetch(`/api/student/reschedule?token=${tok}`).then(r => r.json()),
       ])
       if (!me.ok) { localStorage.removeItem('hs_student_token'); setScreen('login'); setBusy(false); return }
       setStudent(me.student)
       setPayments(pay.payments || [])
       setAttendance(att.attendance || [])
       setSchedule(sch.schedules || [])
+      setMyRequests(rr.requests || [])
       setScreen('portal')
     } catch {}
     setBusy(false)
+  }
+
+  function openReschedule(cls: any) {
+    setRescheduleModal({ cls, freeSlots: [], loading: true, selectedDay: '', selectedTime: '', reason: '' })
+    fetch(`/api/student/auth?action=free_slots&token=${token}&subject_id=${cls.subject_id}`)
+      .then(r => r.json())
+      .then(d => setRescheduleModal((m: any) => ({ ...m, freeSlots: d.slots || [], loading: false })))
+  }
+
+  async function submitReschedule() {
+    if (!rescheduleModal?.selectedDay || !rescheduleModal?.selectedTime) return
+    setBusy(true)
+    const r = await fetch('/api/student/reschedule', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        token, schedule_id: rescheduleModal.cls.id,
+        requested_day: rescheduleModal.selectedDay,
+        requested_time: rescheduleModal.selectedTime,
+        reason: rescheduleModal.reason,
+      })
+    })
+    const d = await r.json()
+    setBusy(false)
+    if (!r.ok) { setRescheduleModal((m: any) => ({ ...m, error: d.error })); return }
+    setRescheduleModal(null)
+    loadPortal(token)
   }
 
   async function requestOtp(e: React.FormEvent) {
@@ -299,6 +417,7 @@ export default function StudentPortal() {
   if (screen === 'portal' && student) return (
     <div className="min-h-screen bg-gray-50 flex flex-col max-w-lg mx-auto">
       {payModal && <PayModal payment={payModal} onClose={() => setPayModal(null)}/>}
+      {rescheduleModal && <RescheduleModal modal={rescheduleModal} setModal={setRescheduleModal} onSubmit={submitReschedule} busy={busy}/>}
 
       {/* Top bar */}
       <div className="bg-[#3B1F8C] px-4 pt-10 pb-16">
@@ -417,7 +536,14 @@ export default function StudentPortal() {
         {/* ── SCHEDULE ── */}
         {activeTab === 'schedule' && (
           <div className="space-y-3">
-            <h2 className="font-bold text-gray-900 mt-1">My Schedule</h2>
+            <div className="flex items-center justify-between mt-1">
+              <h2 className="font-bold text-gray-900">My Schedule</h2>
+              {myRequests.filter(r => r.status === 'pending').length > 0 && (
+                <span className="text-xs bg-amber-100 text-amber-700 font-semibold px-2.5 py-1 rounded-full">
+                  {myRequests.filter(r => r.status === 'pending').length} pending
+                </span>
+              )}
+            </div>
             {sortedSchedule.length === 0
               ? <div className="bg-white rounded-2xl p-8 shadow-sm text-center text-gray-400">No classes scheduled yet</div>
               : DAY_ORDER.filter(d => sortedSchedule.some(s => s.day_of_week === d)).map(day => (
@@ -425,21 +551,54 @@ export default function StudentPortal() {
                     <div className={clx('text-xs font-bold uppercase tracking-widest mb-2', day === TODAY_DAY ? 'text-purple-600' : 'text-gray-400')}>
                       {day === TODAY_DAY ? '⚡ ' : ''}{day}{day === TODAY_DAY ? ' — Today' : ''}
                     </div>
-                    {sortedSchedule.filter(s => s.day_of_week === day).map(cls => (
-                      <div key={cls.id} className="bg-white rounded-2xl p-4 shadow-sm mb-2 flex items-center gap-3">
-                        <div className="w-12 h-12 bg-[#f0f0ff] rounded-xl flex items-center justify-center flex-shrink-0">
-                          <span className="text-2xl">🎵</span>
+                    {sortedSchedule.filter(s => s.day_of_week === day).map(cls => {
+                      const pendingReq = myRequests.find(r => r.schedule_id === cls.id && r.status === 'pending')
+                      return (
+                        <div key={cls.id} className="bg-white rounded-2xl p-4 shadow-sm mb-2">
+                          <div className="flex items-center gap-3">
+                            <div className="w-12 h-12 bg-[#f0f0ff] rounded-xl flex items-center justify-center flex-shrink-0">
+                              <span className="text-2xl">🎵</span>
+                            </div>
+                            <div className="flex-1">
+                              <div className="font-bold text-gray-900">{cls.subjects?.name}</div>
+                              <div className="text-sm text-gray-500">{cls.start_time?.slice(0,5)} · {cls.duration_minutes} min</div>
+                            </div>
+                            {day === TODAY_DAY && <div className="flex flex-col items-end"><div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"/><div className="text-xs text-emerald-600 mt-0.5">Today</div></div>}
+                          </div>
+                          {pendingReq ? (
+                            <div className="mt-3 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 text-xs text-amber-700">
+                              ⏳ Reschedule to <strong>{pendingReq.requested_day} {pendingReq.requested_time?.slice(0,5)}</strong> pending approval
+                            </div>
+                          ) : (
+                            <button onClick={() => openReschedule(cls)} className="mt-3 w-full text-center text-xs font-semibold text-purple-600 bg-purple-50 py-2 rounded-xl active:bg-purple-100">
+                              🔄 Request Reschedule
+                            </button>
+                          )}
                         </div>
-                        <div className="flex-1">
-                          <div className="font-bold text-gray-900">{cls.subjects?.name}</div>
-                          <div className="text-sm text-gray-500">{cls.start_time?.slice(0,5)} · {cls.duration_minutes} min</div>
-                        </div>
-                        {day === TODAY_DAY && <div className="flex flex-col items-end"><div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"/><div className="text-xs text-emerald-600 mt-0.5">Today</div></div>}
-                      </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 ))
             }
+
+            {/* Past requests */}
+            {myRequests.length > 0 && (
+              <div className="mt-5">
+                <div className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-2">Reschedule History</div>
+                {myRequests.map(r => (
+                  <div key={r.id} className="bg-white rounded-2xl p-3.5 mb-2 shadow-sm flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-medium text-gray-800">{r.subjects?.name}</div>
+                      <div className="text-xs text-gray-400">{r.current_day} {r.current_slot_time?.slice(0,5)} → {r.requested_day} {r.requested_time?.slice(0,5)}</div>
+                    </div>
+                    <span className={clx('px-2 py-0.5 rounded-full text-xs font-semibold',
+                      r.status === 'approved' ? 'bg-emerald-100 text-emerald-700' :
+                      r.status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
+                    )}>{r.status}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

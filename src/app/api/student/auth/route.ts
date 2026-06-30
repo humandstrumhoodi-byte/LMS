@@ -74,5 +74,35 @@ export async function GET(req: NextRequest) {
     const { data: schedules } = await svc.from('class_schedules').select('*, subjects(name,code,color), schedule_students!inner(student_id)').eq('schedule_students.student_id', session.student_id).order('day_of_week').order('start_time')
     return NextResponse.json({ ok: true, schedules: schedules || [] })
   }
+
+  if (action === 'free_slots') {
+    const subjectId = params.get('subject_id')
+    if (!subjectId) return NextResponse.json({ error: 'subject_id required' }, { status: 400 })
+
+    const WORKING_DAYS = ['Sun','Tue','Wed','Thu','Fri','Sat']
+    const SLOT_TIMES = ['09:00','09:30','10:00','10:30','11:00','11:30','12:00','12:30','14:00','14:30','15:00','15:30','16:00','16:30','17:00','17:30','18:00','18:30','19:00','19:30']
+
+    const [{ data: allSchedules }, { data: blockedSlots }] = await Promise.all([
+      svc.from('class_schedules').select('day_of_week, start_time, subject_id'),
+      svc.from('blocked_slots').select('day_of_week, start_time'),
+    ])
+
+    const bookedSet = new Set((allSchedules || []).map(s => `${s.day_of_week}|${s.start_time?.slice(0,5)}`))
+    const blockedSet = new Set((blockedSlots || []).map(b => `${b.day_of_week}|${b.start_time?.slice(0,5)}`))
+
+    const slots: { day: string; time: string; status: 'free' | 'booked' | 'blocked' }[] = []
+    for (const day of WORKING_DAYS) {
+      for (const time of SLOT_TIMES) {
+        const key = `${day}|${time}`
+        slots.push({
+          day, time,
+          status: blockedSet.has(key) ? 'blocked' : bookedSet.has(key) ? 'booked' : 'free',
+        })
+      }
+    }
+
+    return NextResponse.json({ ok: true, slots })
+  }
+
   return NextResponse.json({ error: 'Unknown action' }, { status: 400 })
 }

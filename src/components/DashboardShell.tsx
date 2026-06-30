@@ -1531,6 +1531,26 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
 
   // Blocked slots
   const [blockedSlots,setBlockedSlots]=useState<any[]>([])
+  const [rescheduleRequests,setRescheduleRequests]=useState<any[]>([])
+  const [reviewModal,setReviewModal]=useState<any>(null)
+  const [reviewBusy,setReviewBusy]=useState(false)
+  const [reviewNote,setReviewNote]=useState('')
+
+  useEffect(()=>{ loadRescheduleRequests() },[])
+  async function loadRescheduleRequests(){
+    const r=await fetch('/api/reschedule')
+    const d=await r.json()
+    setRescheduleRequests(d.requests||[])
+  }
+  async function reviewRequest(action:'approve'|'reject'){
+    if(!reviewModal)return
+    setReviewBusy(true)
+    const r=await fetch('/api/reschedule',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:reviewModal.id,action,review_note:reviewNote})})
+    const d=await r.json()
+    setReviewBusy(false)
+    if(r.ok){ setReviewModal(null);setReviewNote('');loadRescheduleRequests();reload() }
+    else alert(d.error||'Error reviewing request')
+  }
   const [blockModal,setBlockModal]=useState<{day:string,time:string}|null>(null)
   const [blockReason,setBlockReason]=useState('')
   const [blockBusy,setBlockBusy]=useState(false)
@@ -1607,6 +1627,31 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
         </div>
         {!isTeacher&&<button onClick={()=>setOpen(true)} className="btn-primary"><Plus className="w-4 h-4"/> Add Class</button>}
       </div>
+
+      {/* Pending reschedule requests banner */}
+      {!isTeacher&&rescheduleRequests.filter((r:any)=>r.status==='pending').length>0&&(
+        <div className="card mb-4 border-amber-200 overflow-hidden">
+          <div className="px-4 py-3 bg-amber-50 border-b border-amber-100 flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-amber-600"/>
+            <span className="text-sm font-semibold text-amber-800">{rescheduleRequests.filter((r:any)=>r.status==='pending').length} reschedule request{rescheduleRequests.filter((r:any)=>r.status==='pending').length!==1?'s':''} awaiting review</span>
+          </div>
+          {rescheduleRequests.filter((r:any)=>r.status==='pending').map((r:any)=>(
+            <div key={r.id} className="flex items-center justify-between px-4 py-3 border-b border-gray-50 last:border-0">
+              <div className="flex items-center gap-3">
+                <div className={clsx('w-9 h-9 rounded-full flex items-center justify-center text-xs font-semibold flex-shrink-0',ac(0))}>{ini(r.students?.full_name||'?')}</div>
+                <div>
+                  <div className="text-sm font-medium text-gray-900">{r.students?.full_name}</div>
+                  <div className="text-xs text-gray-400">
+                    {r.subjects?.name} · {r.current_day||'—'} {r.current_slot_time?.slice(0,5)||''} → <strong className="text-brand-600">{r.requested_day} {r.requested_time?.slice(0,5)}</strong>
+                  </div>
+                  {r.reason&&<div className="text-xs text-gray-400 italic mt-0.5">"{r.reason}"</div>}
+                </div>
+              </div>
+              <button onClick={()=>{setReviewModal(r);setReviewNote('')}} className="btn btn-sm text-brand-600 border-brand-200 hover:bg-brand-50">Review</button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Controls bar */}
       <div className="flex flex-wrap items-center gap-3 mb-4">
@@ -1872,6 +1917,33 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
           </div>
         </div>
       </Modal>}
+
+      {/* Reschedule review modal */}
+      <Modal open={!!reviewModal} onClose={()=>setReviewModal(null)} title="Review Reschedule Request">
+        {reviewModal&&(
+          <div className="space-y-4">
+            <div className="bg-gray-50 rounded-xl p-4 text-sm space-y-2">
+              <div className="flex justify-between"><span className="text-gray-400">Student</span><span className="font-medium">{reviewModal.students?.full_name}</span></div>
+              <div className="flex justify-between"><span className="text-gray-400">Subject</span><span className="font-medium">{reviewModal.subjects?.name}</span></div>
+              <div className="flex justify-between"><span className="text-gray-400">Current slot</span><span className="font-medium">{reviewModal.current_day||'—'} {reviewModal.current_slot_time?.slice(0,5)||''}</span></div>
+              <div className="flex justify-between"><span className="text-gray-400">Requested slot</span><span className="font-semibold text-brand-600">{reviewModal.requested_day} {reviewModal.requested_time?.slice(0,5)}</span></div>
+              {reviewModal.reason&&<div className="pt-2 border-t border-gray-100"><span className="text-gray-400">Reason: </span><span className="italic">{reviewModal.reason}</span></div>}
+            </div>
+            <div>
+              <label className="label">Note to student (optional)</label>
+              <textarea className="input" rows={2} value={reviewNote} onChange={e=>setReviewNote(e.target.value)} placeholder="e.g. Confirmed, see you then!"/>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={()=>reviewRequest('reject')} disabled={reviewBusy} className="btn btn-danger flex-1 justify-center">
+                {reviewBusy?<Loader2 className="w-4 h-4 animate-spin"/>:null}✕ Reject
+              </button>
+              <button onClick={()=>reviewRequest('approve')} disabled={reviewBusy} className="btn-primary flex-1 justify-center bg-emerald-500 hover:bg-emerald-600 border-emerald-500">
+                {reviewBusy?<Loader2 className="w-4 h-4 animate-spin"/>:null}✓ Approve
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }
@@ -4359,6 +4431,10 @@ const ENROLLMENT_STEPS = ['Personal','Guardian & Medical','Instrument & Package'
 type EnrollStep = typeof ENROLLMENT_STEPS[number]
 
 function EnrollmentModal({ student, subjects, packages, schedules, onClose, reload }: any) {
+  const [blockedSlots, setBlockedSlots] = useState<any[]>([])
+  useEffect(() => {
+    sb().from('blocked_slots').select('*').then(({ data }: any) => setBlockedSlots(data || []))
+  }, [])
   const supabase = sb()
   const isEdit = !!student
   const [step, setStep] = useState<EnrollStep>('Personal')
@@ -4394,6 +4470,8 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
     // Instrument
     subject_ids:            (student?.student_subjects||[]).map((x:any)=>x.subject_id) as string[],
     grade_level:            'Beginner–Grade 2',
+    enroll_day:             '',
+    enroll_time:            '',
     // Invoice
     package_id:             '',
     invoice_amount:         '',
@@ -4459,6 +4537,36 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
         p.subject_ids.map((subId: string) => ({ student_id: sid, subject_id: subId, grade_level: p.grade_level }))
       )
     }
+
+    // If a slot was selected, create or reuse the class and assign the student to it
+    if (p.enroll_day && p.enroll_time && p.subject_ids.length) {
+      const primarySubjectId = p.subject_ids[0]
+      // Re-check the slot is still free (race condition safety)
+      const { data: conflict } = await supabase
+        .from('class_schedules')
+        .select('id')
+        .eq('subject_id', primarySubjectId)
+        .eq('day_of_week', p.enroll_day)
+        .eq('start_time', p.enroll_time)
+        .maybeSingle()
+
+      let scheduleId = conflict?.id
+      if (!scheduleId) {
+        const { data: newCls } = await supabase
+          .from('class_schedules')
+          .insert({ subject_id: primarySubjectId, day_of_week: p.enroll_day, start_time: p.enroll_time, duration_minutes: 45 })
+          .select()
+          .single()
+        scheduleId = newCls?.id
+      }
+      if (scheduleId) {
+        await supabase.from('schedule_students').upsert(
+          { schedule_id: scheduleId, student_id: sid },
+          { onConflict: 'schedule_id,student_id', ignoreDuplicates: true }
+        )
+      }
+    }
+
     setBusy(false)
     setStep('Invoice')
   }
@@ -4743,32 +4851,49 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
                 </div>
               </div>
 
-              {/* Free slot picker */}
+              {/* Free slot picker — now bookable */}
               {p.subject_ids.length > 0 && (
                 <div>
-                  <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Available Class Slots</div>
+                  <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Select a Class Slot</div>
                   <div className="space-y-3">
                     {['Sun','Tue','Wed','Thu','Fri','Sat'].map(day => {
                       const bookedSlots = schedules.filter((sc:any) => p.subject_ids.includes(sc.subject_id) && sc.day_of_week === day).map((sc:any) => sc.start_time?.slice(0,5))
-                      const allSlots = ['09:00','10:00','10:30','11:00','11:30','12:00','14:00','15:00','16:00','17:00','18:00','19:00']
-                      const freeSlots = allSlots.filter(t => !bookedSlots.includes(t))
-                      if (!freeSlots.length) return null
+                      const blockedSlotsForDay = (blockedSlots||[]).filter((b:any)=>b.day_of_week===day).map((b:any)=>b.start_time?.slice(0,5))
+                      const allSlots = ['09:00','09:30','10:00','10:30','11:00','11:30','12:00','12:30','14:00','14:30','15:00','15:30','16:00','16:30','17:00','17:30','18:00','18:30','19:00']
+                      const freeSlots = allSlots.filter(t => !bookedSlots.includes(t) && !blockedSlotsForDay.includes(t))
+                      if (!freeSlots.length && !bookedSlots.length) return null
                       return (
                         <div key={day}>
                           <div className="text-xs font-medium text-gray-500 mb-1.5">{day === 'Sun' ? 'Sunday' : day === 'Tue' ? 'Tuesday' : day === 'Wed' ? 'Wednesday' : day === 'Thu' ? 'Thursday' : day === 'Fri' ? 'Friday' : 'Saturday'}</div>
                           <div className="flex flex-wrap gap-1.5">
-                            {freeSlots.map(t => (
-                              <span key={t} className="px-2.5 py-1 rounded-lg text-xs font-mono bg-emerald-50 text-emerald-700 border border-emerald-100">{t}</span>
-                            ))}
+                            {freeSlots.map(t => {
+                              const selected = p.enroll_day === day && p.enroll_time === t
+                              return (
+                                <button key={t} type="button"
+                                  onClick={() => { sf('enroll_day', day); sf('enroll_time', t) }}
+                                  className={clsx('px-2.5 py-1 rounded-lg text-xs font-mono font-medium border transition-all cursor-pointer',
+                                    selected ? 'bg-brand-500 text-white border-brand-500' : 'bg-emerald-50 text-emerald-700 border-emerald-100 hover:bg-emerald-100'
+                                  )}>
+                                  {t}
+                                </button>
+                              )
+                            })}
                             {bookedSlots.map((t:string) => (
-                              <span key={t} className="px-2.5 py-1 rounded-lg text-xs font-mono bg-gray-100 text-gray-400 line-through">{t}</span>
+                              <span key={t} className="px-2.5 py-1 rounded-lg text-xs font-mono bg-gray-100 text-gray-400 line-through cursor-not-allowed">{t}</span>
                             ))}
                           </div>
                         </div>
                       )
                     })}
                   </div>
-                  <p className="text-xs text-gray-400 mt-2">Green = available · Strikethrough = already booked for this instrument. Assign a class slot from the Schedule tab after enrollment.</p>
+                  {p.enroll_day && p.enroll_time ? (
+                    <div className="mt-3 flex items-center justify-between bg-brand-50 border border-brand-100 rounded-xl px-3 py-2.5">
+                      <div className="text-sm text-brand-700">Slot selected: <strong>{p.enroll_day} at {p.enroll_time}</strong></div>
+                      <button type="button" onClick={() => { sf('enroll_day',''); sf('enroll_time','') }} className="text-xs text-brand-400 hover:text-brand-600">Clear</button>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-gray-400 mt-2">Click a green slot to book a class time — this will be created automatically when you finish enrolling. You can also skip and assign a slot later from the Schedule tab.</p>
+                  )}
                 </div>
               )}
 
@@ -4823,6 +4948,7 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
                   <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3 text-sm text-emerald-800">
                     <strong>{savedStudent?.full_name}</strong> enrolled · {p.subject_ids.length} instrument(s) · {p.grade_level}
                     {selectedPkg && <span> · {selectedPkg.name}</span>}
+                    {p.enroll_day && p.enroll_time && <div className="mt-1">🗓️ Class booked: <strong>{p.enroll_day} at {p.enroll_time}</strong></div>}
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
