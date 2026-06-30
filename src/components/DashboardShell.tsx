@@ -373,7 +373,7 @@ function DashboardShellInner({profile}:{profile:Profile}){
       <main className="flex-1 overflow-y-auto bg-gray-50">
         <div className="max-w-6xl mx-auto px-6 py-6">
           {tab==='home'&&<HomeTab profile={profile} perms={perms} students={students} profiles={profiles} payments={payments} schedules={schedules} subjects={subjects} leads={leads} setTab={setTab}/>}
-          {tab==='students'&&<StudentsTab students={students} subjects={subjects} packages={packages} fees={fees} schedules={schedules} reload={load}/>}
+          {tab==='students'&&<StudentsTab students={students} subjects={subjects} packages={packages} fees={fees} schedules={schedules} profile={profile} reload={load}/>}
           {tab==='leads'&&<LeadsTab leads={leads} subjects={subjects} reload={load}/>}
           {tab==='teachers'&&<TeachersTab profiles={profiles} subjects={subjects} reload={load}/>}
           {tab==='subjects'&&<SubjectsTab subjects={subjects} profiles={profiles} students={students} fees={fees} subjectTeachers={subjectTeachers} reload={load}/>}
@@ -726,7 +726,7 @@ function HomeTab({profile,perms,students,profiles,payments,schedules,subjects,le
 }
 
 // ══════════════════════════════════════════════════════════════ STUDENTS
-function StudentsTab({students,subjects,packages,fees,schedules,reload}:any){
+function StudentsTab({students,subjects,packages,fees,schedules,profile,reload}:any){
   const supabase=sb()
   const [q,setQ]=useState('')
   const [enrollOpen,setEnrollOpen]=useState(false)
@@ -821,6 +821,7 @@ function StudentsTab({students,subjects,packages,fees,schedules,reload}:any){
         subjects={subjects}
         packages={packages}
         fees={fees}
+        profile={profile}
         onClose={()=>setDetailStudent(null)}
         reload={reload}
       />}
@@ -3088,9 +3089,241 @@ export default function DashboardShell({profile}:{profile:Profile}){
 // ══════════════════════════════════════════════════════════════
 // STUDENT DETAIL MODAL — month-by-month payment ledger
 // ══════════════════════════════════════════════════════════════
-function StudentDetailModal({ student, payments, subjects, packages, fees, onClose, reload }: any) {
-  const [activeTab, setActiveTab] = useState<'overview'|'monthly'|'invoices'|'raise_invoice'>('overview')
+// ══════════════════════════════════════════════════════════════
+// BILLING EDIT MODAL — edit historical payment with confirmation + audit log
+// ══════════════════════════════════════════════════════════════
+const BILLING_EDITABLE_FIELDS = [
+  { key: 'amount',          label: 'Amount (₹)',     type: 'number' },
+  { key: 'discount',        label: 'Discount (₹)',   type: 'number' },
+  { key: 'status',          label: 'Status',         type: 'select', options: ['paid','pending','overdue','failed'] },
+  { key: 'payment_date',    label: 'Payment Date',   type: 'date' },
+  { key: 'due_date',        label: 'Due Date',       type: 'date' },
+  { key: 'month_label',     label: 'Month Label',    type: 'text' },
+  { key: 'mode_of_payment', label: 'Payment Mode',   type: 'text' },
+  { key: 'invoice_number',  label: 'Invoice #',      type: 'text' },
+  { key: 'receipt_number',  label: 'Receipt #',      type: 'text' },
+  { key: 'description',     label: 'Description',    type: 'text' },
+  { key: 'notes',           label: 'Notes',          type: 'text' },
+] as const
+
+function BillingEditModal({ payment, subjects, student, profile, supabase, onClose, onSaved }: any) {
+  const [form, setForm] = useState<any>(() => {
+    const f: any = {}
+    BILLING_EDITABLE_FIELDS.forEach(field => { f[field.key] = payment[field.key] ?? '' })
+    return f
+  })
+  const [step, setStep] = useState<'edit'|'confirm'>('edit')
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  // Compute what actually changed
+  const changes: Record<string, { old: any; new: any }> = {}
+  BILLING_EDITABLE_FIELDS.forEach(field => {
+    const oldVal = payment[field.key] ?? ''
+    const newVal = form[field.key] ?? ''
+    const normalizedOld = field.type === 'number' ? Number(oldVal || 0) : String(oldVal)
+    const normalizedNew = field.type === 'number' ? Number(newVal || 0) : String(newVal)
+    if (normalizedOld !== normalizedNew) {
+      changes[field.key] = { old: oldVal, new: newVal }
+    }
+  })
+  const hasChanges = Object.keys(changes).length > 0
+
+  async function confirmSave() {
+    if (!hasChanges) { onClose(); return }
+    setBusy(true)
+    setError('')
+
+    const payload: any = {}
+    BILLING_EDITABLE_FIELDS.forEach(field => {
+      const v = form[field.key]
+      payload[field.key] = field.type === 'number' ? (v === '' ? null : Number(v)) : (v || null)
+    })
+
+    const { error: updateErr } = await supabase.from('payments').update(payload).eq('id', payment.id)
+    if (updateErr) { setError(updateErr.message); setBusy(false); return }
+
+    // Write audit log entry
+    await supabase.from('billing_audit_log').insert({
+      payment_id: payment.id,
+      student_id: student.id,
+      changed_by: profile?.id || null,
+      changed_by_name: profile?.full_name || 'Unknown',
+      field_changes: changes,
+      reason: reason || null,
+    })
+
+    setBusy(false)
+    onSaved()
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 flex-shrink-0">
+          <div>
+            <h2 className="text-base font-semibold text-gray-900">{step==='edit' ? 'Edit Historical Billing' : 'Confirm Changes'}</h2>
+            <p className="text-xs text-gray-400 mt-0.5">{student.full_name} · Invoice #{payment.invoice_number || payment.id.slice(0,6)}</p>
+          </div>
+          <button onClick={onClose} className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100"><X className="w-4 h-4"/></button>
+        </div>
+
+        <div className="overflow-y-auto flex-1 px-6 py-5">
+          {step === 'edit' && (
+            <div className="space-y-3">
+              <div className="bg-amber-50 border border-amber-100 rounded-xl p-3 text-xs text-amber-700 mb-2">
+                ⚠️ You're editing a historical billing record. All changes are logged for audit purposes and visible to the super admin.
+              </div>
+              {BILLING_EDITABLE_FIELDS.map(field => (
+                <div key={field.key}>
+                  <label className="label">{field.label}</label>
+                  {field.type === 'select' ? (
+                    <select className="input" value={form[field.key]} onChange={e=>setForm((f:any)=>({...f,[field.key]:e.target.value}))}>
+                      {field.options!.map(o => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  ) : (
+                    <input className="input" type={field.type} value={form[field.key]} onChange={e=>setForm((f:any)=>({...f,[field.key]:e.target.value}))}/>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {step === 'confirm' && (
+            <div className="space-y-4">
+              <div className="bg-red-50 border border-red-100 rounded-xl p-4 text-sm text-red-700">
+                <strong>You are about to permanently modify a historical billing record.</strong> This action is logged and cannot be undone. Please review the changes below carefully.
+              </div>
+
+              <div className="space-y-2">
+                {Object.entries(changes).map(([key, { old, new: newVal }]) => {
+                  const field = BILLING_EDITABLE_FIELDS.find(f => f.key === key)
+                  return (
+                    <div key={key} className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2 text-sm">
+                      <span className="text-gray-500">{field?.label || key}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-red-500 line-through">{String(old || '—')}</span>
+                        <span className="text-gray-300">→</span>
+                        <span className="text-emerald-600 font-semibold">{String(newVal || '—')}</span>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+
+              <div>
+                <label className="label">Reason for change (recommended)</label>
+                <textarea className="input min-h-[60px] resize-none" placeholder="e.g. Corrected data entry error from CSV import" value={reason} onChange={e=>setReason(e.target.value)}/>
+              </div>
+
+              {error && <div className="px-3 py-2 rounded-lg bg-red-50 text-red-600 text-sm">{error}</div>}
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 px-6 py-4 border-t border-gray-100 flex-shrink-0 bg-gray-50/60 rounded-b-2xl">
+          {step === 'edit' ? (
+            <>
+              <button className="btn" onClick={onClose}>Cancel</button>
+              <button
+                className="btn-primary"
+                onClick={() => hasChanges ? setStep('confirm') : onClose()}
+                disabled={!hasChanges}
+              >
+                Review Changes →
+              </button>
+            </>
+          ) : (
+            <>
+              <button className="btn" onClick={()=>setStep('edit')}>← Back to Edit</button>
+              <button className="btn-primary bg-red-500 hover:bg-red-600 border-red-500" onClick={confirmSave} disabled={busy}>
+                {busy ? <Loader2 className="w-4 h-4 animate-spin"/> : <CheckCircle className="w-4 h-4"/>}
+                {busy ? 'Saving…' : 'Confirm & Save Changes'}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════
+// AUDIT LOG PANEL — superadmin only, shows billing edit history
+// ══════════════════════════════════════════════════════════════
+function AuditLogPanel({ studentId, supabase }: any) {
+  const [logs, setLogs] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    load()
+  }, [studentId])
+
+  async function load() {
+    setLoading(true)
+    const { data } = await supabase
+      .from('billing_audit_log')
+      .select('*')
+      .eq('student_id', studentId)
+      .order('created_at', { ascending: false })
+    setLogs(data || [])
+    setLoading(false)
+  }
+
+  if (loading) return <div className="py-10 text-center text-gray-400"><Loader2 className="w-5 h-5 animate-spin mx-auto mb-2"/>Loading audit log…</div>
+
+  if (!logs.length) return (
+    <div className="py-10 text-center text-gray-300">
+      <ShieldCheck className="w-10 h-10 mx-auto mb-3 opacity-30"/>
+      <p>No billing edits recorded for this student</p>
+    </div>
+  )
+
+  return (
+    <div className="space-y-3">
+      <div className="bg-purple-50 border border-purple-100 rounded-xl p-3 text-xs text-purple-700 mb-2">
+        🔒 This log is only visible to super admins. It records every change made to this student's historical billing records.
+      </div>
+      {logs.map(log => (
+        <div key={log.id} className="card p-4">
+          <div className="flex items-start justify-between mb-2">
+            <div>
+              <div className="text-sm font-medium text-gray-900">{log.changed_by_name || 'Unknown user'}</div>
+              <div className="text-xs text-gray-400">{new Date(log.created_at).toLocaleString('en-IN')}</div>
+            </div>
+            <span className="badge bg-gray-100 text-gray-500 text-xs">Invoice #{log.payment_id?.slice(0,6) || '—'}</span>
+          </div>
+          <div className="space-y-1.5 mb-2">
+            {Object.entries(log.field_changes || {}).map(([key, val]: [string, any]) => {
+              const field = BILLING_EDITABLE_FIELDS.find(f => f.key === key)
+              return (
+                <div key={key} className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-1.5 text-xs">
+                  <span className="text-gray-500">{field?.label || key}</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-red-500 line-through">{String(val.old ?? '—')}</span>
+                    <span className="text-gray-300">→</span>
+                    <span className="text-emerald-600 font-semibold">{String(val.new ?? '—')}</span>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+          {log.reason && <div className="text-xs text-gray-500 italic border-t border-gray-100 pt-2">"{log.reason}"</div>}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function StudentDetailModal({ student, payments, subjects, packages, fees, profile, onClose, reload }: any) {
+  const [activeTab, setActiveTab] = useState<'overview'|'monthly'|'invoices'|'raise_invoice'|'audit_log'>('overview')
   const supabase = sb()
+  const isSuperadmin = profile?.role === 'superadmin'
+
+  const [editPayment, setEditPayment] = useState<any>(null)
+  const [sendingPaid, setSendingPaid] = useState<Record<string, boolean>>({})
+  const [paidSentIds, setPaidSentIds] = useState<Record<string, boolean>>({})
 
   const totalPaid    = payments.filter((p:any) => p.status === 'paid').reduce((a:number,p:any) => a + p.amount, 0)
   const totalPending = payments.filter((p:any) => p.status === 'pending' || p.status === 'overdue').reduce((a:number,p:any) => a + p.amount, 0)
@@ -3120,6 +3353,31 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, onClo
     s==='failed'?'bg-red-50 text-red-400':
     'bg-amber-50 text-amber-700'
   )
+
+  async function sendPaidConfirmation(p: any) {
+    if (!student.email) return
+    setSendingPaid(s => ({ ...s, [p.id]: true }))
+    const issueDate = p.payment_date ? new Date(p.payment_date+'T00:00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'}) : new Date().toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'})
+    await fetch('/api/email', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'paid_confirmation',
+        studentEmail: student.email,
+        studentName: student.full_name,
+        invoiceData: {
+          invoiceNo: p.invoice_number || p.id.slice(0,6),
+          subjectName: p.subjects?.name || p.description || 'Tuition',
+          monthLabel: p.month_label || '',
+          amount: p.amount,
+          discount: p.discount || 0,
+          paymentDate: issueDate,
+          mode: p.mode_of_payment || 'UPI',
+        }
+      })
+    })
+    setSendingPaid(s => ({ ...s, [p.id]: false }))
+    setPaidSentIds(s => ({ ...s, [p.id]: true }))
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm" onClick={e=>e.target===e.currentTarget&&onClose()}>
@@ -3166,6 +3424,7 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, onClo
             { id:'monthly',        label:`Monthly (${months.length} months)` },
             { id:'invoices',       label:`All Transactions (${payments.length})` },
             { id:'raise_invoice',  label:'🧾 Raise Invoice' },
+            ...(isSuperadmin ? [{ id:'audit_log' as const, label:'🔒 Audit Log' }] : []),
           ] as const).map(t => (
             <button key={t.id} onClick={()=>setActiveTab(t.id)}
               className={clsx('px-4 py-2.5 text-sm font-medium border-b-2 transition-colors',
@@ -3305,6 +3564,14 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, onClo
                                 <div className="font-semibold text-sm">{fmt(p.amount)}</div>
                                 {p.discount>0 && <div className="text-xs text-blue-600">-{fmt(p.discount)} disc</div>}
                                 <span className={statusBadge(p.status)}>{p.status}</span>
+                                <div className="flex gap-1 mt-1.5 justify-end">
+                                  <button onClick={()=>setEditPayment(p)} title="Edit" className="w-6 h-6 flex items-center justify-center rounded text-gray-400 hover:bg-gray-100"><Edit className="w-3 h-3"/></button>
+                                  {p.status==='paid'&&student.email&&(
+                                    <button onClick={()=>sendPaidConfirmation(p)} disabled={sendingPaid[p.id]} title="Email paid confirmation" className={clsx('w-6 h-6 flex items-center justify-center rounded',paidSentIds[p.id]?'text-emerald-600 bg-emerald-50':'text-brand-500 hover:bg-brand-50')}>
+                                      {sendingPaid[p.id]?<Loader2 className="w-3 h-3 animate-spin"/>:paidSentIds[p.id]?<CheckCircle className="w-3 h-3"/>:<Mail className="w-3 h-3"/>}
+                                    </button>
+                                  )}
+                                </div>
                               </div>
                             </div>
                           ))}
@@ -3345,6 +3612,7 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, onClo
                         <th className="th text-right">Discount</th>
                         <th className="th text-right">Amount</th>
                         <th className="th">Status</th>
+                        <th className="th w-24">Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3370,6 +3638,21 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, onClo
                           <td className="td text-right text-blue-600">{p.discount>0?`-${fmt(p.discount)}`:''}</td>
                           <td className="td text-right font-semibold">{fmt(p.amount)}</td>
                           <td className="td"><span className={statusBadge(p.status)}>{p.status}</span></td>
+                          <td className="td">
+                            <div className="flex gap-1">
+                              <button onClick={()=>setEditPayment(p)} title="Edit this historical billing record" className="btn btn-sm"><Edit className="w-3 h-3"/></button>
+                              {p.status==='paid'&&student.email&&(
+                                <button
+                                  onClick={()=>sendPaidConfirmation(p)}
+                                  disabled={sendingPaid[p.id]}
+                                  title="Email paid confirmation invoice"
+                                  className={clsx('btn btn-sm',paidSentIds[p.id]?'text-emerald-600 border-emerald-200 bg-emerald-50':'text-brand-600 border-brand-200 hover:bg-brand-50')}
+                                >
+                                  {sendingPaid[p.id]?<Loader2 className="w-3 h-3 animate-spin"/>:paidSentIds[p.id]?<CheckCircle className="w-3 h-3"/>:<Mail className="w-3 h-3"/>}
+                                </button>
+                              )}
+                            </div>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -3378,7 +3661,7 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, onClo
                         <td colSpan={5} className="td text-right text-xs font-medium text-gray-500">Totals</td>
                         <td className="td text-right text-blue-600 font-semibold">{totalDiscount>0?`-${fmt(totalDiscount)}`:''}</td>
                         <td className="td text-right font-bold text-emerald-700">{fmt(totalPaid)}</td>
-                        <td className="td"></td>
+                        <td className="td" colSpan={2}></td>
                       </tr>
                     </tfoot>
                   </table>
@@ -3399,8 +3682,26 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, onClo
               onSuccess={()=>setActiveTab('invoices')}
             />
           )}
+
+          {/* ── AUDIT LOG TAB (superadmin only) ── */}
+          {activeTab === 'audit_log' && isSuperadmin && (
+            <AuditLogPanel studentId={student.id} supabase={supabase}/>
+          )}
         </div>
       </div>
+
+      {/* ── Billing edit modal with confirmation ── */}
+      {editPayment && (
+        <BillingEditModal
+          payment={editPayment}
+          subjects={subjects}
+          student={student}
+          profile={profile}
+          supabase={supabase}
+          onClose={()=>setEditPayment(null)}
+          onSaved={()=>{setEditPayment(null);reload()}}
+        />
+      )}
     </div>
   )
 }

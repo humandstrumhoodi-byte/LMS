@@ -353,5 +353,59 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ...r, dev: !createTransporter() })
   }
 
+  // ── Paid confirmation — sent when admin marks/confirms a payment as paid ──
+  if (type === 'paid_confirmation') {
+    const { studentEmail, studentName, invoiceData } = body
+    if (!studentEmail) return NextResponse.json({ error: 'No email for this student' }, { status: 400 })
+
+    const { invoiceNo, subjectName, monthLabel, amount, discount, paymentDate, mode } = invoiceData
+    const logoUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://your-app.vercel.app'}/logo.png`
+    const phoneNumber = '+91 82960 12123'
+
+    const html = `
+      <div style="font-family:sans-serif;max-width:520px;margin:0 auto">
+        <div style="background:#059669;padding:20px 24px;border-radius:12px 12px 0 0;display:flex;align-items:center;gap:12px">
+          <img src="${logoUrl}" alt="" width="40" height="40" style="width:40px;height:40px;border-radius:50%;object-fit:cover;border:2px solid rgba(255,255,255,0.3)" onerror="this.style.display='none'"/>
+          <div>
+            <div style="color:white;font-size:18px;font-weight:700">✅ Payment Received</div>
+            <div style="color:rgba(255,255,255,0.8);font-size:12px;margin-top:3px">Hum and Strum Music School, Hoodi</div>
+          </div>
+        </div>
+        <div style="background:white;padding:24px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px">
+          <p style="color:#374151">Hi <strong>${studentName}</strong>,</p>
+          <p style="color:#374151">Thank you! We've received your payment. Here are the details for your records:</p>
+
+          <table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:13px">
+            <tr style="border-bottom:1px solid #f3f4f6"><td style="padding:8px 0;color:#6b7280">Invoice</td><td style="padding:8px 0;text-align:right;font-weight:600;font-family:monospace">${invoiceNo}</td></tr>
+            <tr style="border-bottom:1px solid #f3f4f6"><td style="padding:8px 0;color:#6b7280">Subject</td><td style="padding:8px 0;text-align:right;font-weight:500">${subjectName}</td></tr>
+            ${monthLabel ? `<tr style="border-bottom:1px solid #f3f4f6"><td style="padding:8px 0;color:#6b7280">Period</td><td style="padding:8px 0;text-align:right;font-weight:500">${monthLabel}</td></tr>` : ''}
+            <tr style="border-bottom:1px solid #f3f4f6"><td style="padding:8px 0;color:#6b7280">Payment Date</td><td style="padding:8px 0;text-align:right;font-weight:500">${paymentDate}</td></tr>
+            <tr style="border-bottom:1px solid #f3f4f6"><td style="padding:8px 0;color:#6b7280">Payment Mode</td><td style="padding:8px 0;text-align:right;font-weight:500">${mode}</td></tr>
+            ${Number(discount) > 0 ? `<tr style="border-bottom:1px solid #f3f4f6"><td style="padding:8px 0;color:#2563eb">Discount Applied</td><td style="padding:8px 0;text-align:right;color:#2563eb;font-weight:500">-₹${Number(discount).toLocaleString('en-IN')}</td></tr>` : ''}
+          </table>
+
+          <div style="background:#059669;border-radius:10px;padding:14px 18px;display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+            <span style="color:rgba(255,255,255,0.85);font-size:13px;font-weight:500">Amount Paid</span>
+            <span style="color:white;font-size:22px;font-weight:700">₹${Number(amount).toLocaleString('en-IN')}</span>
+          </div>
+
+          <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px 16px;text-align:center;margin-bottom:16px">
+            <div style="font-size:20px;margin-bottom:4px">🎵</div>
+            <div style="font-size:13px;color:#166534;font-weight:600">See you in class!</div>
+          </div>
+
+          <div style="background:#f0f0ff;border-radius:10px;padding:14px;text-align:center;margin-bottom:16px">
+            <p style="color:#3B1F8C;font-size:13px;margin:0 0 8px">Questions about this payment? Call or WhatsApp us:</p>
+            <a href="tel:${phoneNumber.replace(/\s/g,'')}" style="display:inline-block;background:#3B1F8C;color:white;font-size:17px;font-weight:700;text-decoration:none;padding:8px 18px;border-radius:8px">📞 ${phoneNumber}</a>
+          </div>
+
+          <p style="color:#9ca3af;font-size:11px;text-align:center;border-top:1px solid #f3f4f6;padding-top:12px">Hum and Strum Music School · Hoodi, Bengaluru</p>
+        </div>
+      </div>`
+
+    const r = await sendEmail(studentEmail, `✅ Payment Confirmed — ${subjectName} (₹${Number(amount).toLocaleString('en-IN')})`, html)
+    return NextResponse.json({ ...r, dev: !createTransporter() })
+  }
+
   return NextResponse.json({ error: 'Unknown type' }, { status: 400 })
 }
