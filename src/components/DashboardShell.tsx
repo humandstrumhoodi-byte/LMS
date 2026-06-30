@@ -13,6 +13,23 @@ import type { Profile, Perms, Role } from '@/types'
 import { ROLE_PERMS, ROLE_LABEL, ROLE_COLOR, DAYS, TIMES, COLORS } from '@/types'
 
 const fmt = (n: number) => '₹' + (n||0).toLocaleString('en-IN')
+
+// Late payment fine: 5% of the outstanding amount per 15 days overdue, compounding on the base amount.
+// e.g. 1-15 days late = +5%, 16-30 days = +10%, 31-45 days = +15%, etc.
+function calcLateFine(payment: any): { periods: number; finePct: number; fineAmount: number; daysOverdue: number } {
+  if (!payment.due_date || payment.status === 'paid' || payment.fine_enabled === false) {
+    return { periods: 0, finePct: 0, fineAmount: 0, daysOverdue: 0 }
+  }
+  const due = new Date(payment.due_date + 'T00:00:00')
+  const today = new Date()
+  today.setHours(0,0,0,0)
+  const daysOverdue = Math.floor((today.getTime() - due.getTime()) / 86400000)
+  if (daysOverdue <= 0) return { periods: 0, finePct: 0, fineAmount: 0, daysOverdue: 0 }
+  const periods = Math.ceil(daysOverdue / 15)
+  const finePct = periods * 5
+  const fineAmount = Math.round((payment.amount || 0) * finePct / 100)
+  return { periods, finePct, fineAmount, daysOverdue }
+}
 const ini = (name: string) => (name||'?').split(' ').map((w:string)=>w[0]).join('').toUpperCase().slice(0,2)
 const avatarColors = ['bg-violet-100 text-violet-700','bg-sky-100 text-sky-700','bg-emerald-100 text-emerald-700','bg-amber-100 text-amber-700','bg-rose-100 text-rose-700']
 const ac = (i:number) => avatarColors[i%avatarColors.length]
@@ -2033,11 +2050,133 @@ function FeesTab({subjects,fees,reload}:any){
 }
 
 // ══════════════════════════════════════════════════════════════ PAYMENTS
+// ══════════════════════════════════════════════════════════════
+// PENDING BY MONTH — grouped overdue/pending payments with fines
+// ══════════════════════════════════════════════════════════════
+function PendingByMonthView({ payments, reload, supabase, sendFineReminder, sendingFine }: any) {
+  const pending = payments.filter((p: any) => p.status === 'pending' || p.status === 'overdue')
+
+  // Group by month_label, fall back to due_date month, fall back to "No Date"
+  const byMonth: Record<string, any[]> = {}
+  pending.forEach((p: any) => {
+    const key = p.month_label || (p.due_date ? new Date(p.due_date+'T00:00:00').toLocaleString('en-IN',{month:'long',year:'numeric'}) : 'No Date Set')
+    if (!byMonth[key]) byMonth[key] = []
+    byMonth[key].push(p)
+  })
+
+  // Sort months: newest due_date first within each group already; sort group keys by most-recent activity
+  const monthKeys = Object.keys(byMonth).sort((a, b) => {
+    const da = byMonth[a][0]?.due_date || byMonth[a][0]?.created_at || ''
+    const db = byMonth[b][0]?.due_date || byMonth[b][0]?.created_at || ''
+    return db.localeCompare(da)
+  })
+
+  async function toggleFineEnabled(payment: any, enabled: boolean) {
+    await supabase.from('payments').update({ fine_enabled: enabled }).eq('id', payment.id)
+    reload()
+  }
+
+  if (!pending.length) {
+    return (
+      <div className="card p-12 text-center text-gray-300">
+        <CheckCircle className="w-10 h-10 mx-auto mb-3 opacity-30"/>
+        <p>No pending payments — all caught up! 🎉</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      {monthKeys.map(month => {
+        const monthPayments = byMonth[month]
+        const monthTotal = monthPayments.reduce((a: number, p: any) => a + p.amount, 0)
+        const monthFines = monthPayments.reduce((a: number, p: any) => a + calcLateFine(p).fineAmount, 0)
+        const overdueCount = monthPayments.filter((p: any) => calcLateFine(p).daysOverdue > 0).length
+
+        return (
+          <div key={month} className="card overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 bg-amber-50/60 border-b border-amber-100">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-gray-900 text-sm">{month}</span>
+                <span className="badge bg-amber-100 text-amber-700 text-xs">{monthPayments.length} pending</span>
+                {overdueCount > 0 && <span className="badge bg-red-100 text-red-700 text-xs">{overdueCount} overdue</span>}
+              </div>
+              <div className="flex items-center gap-4 text-xs">
+                {monthFines > 0 && <span className="text-rose-600 font-semibold">+{fmt(monthFines)} fines</span>}
+                <span className="font-bold text-amber-700 text-sm">{fmt(monthTotal + monthFines)}</span>
+              </div>
+            </div>
+
+            <div>
+              {monthPayments.map((p: any) => {
+                const fine = calcLateFine(p)
+                const fineEnabled = p.fine_enabled !== false
+                return (
+                  <div key={p.id} className="flex items-center justify-between px-4 py-3 border-b border-gray-50 last:border-0 hover:bg-gray-50/40">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-gray-900">{p.students?.full_name || p.student_name || 'Unknown'}</div>
+                      <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                        {p.subjects && <span className={clsx('badge text-xs', colorBadge[p.subjects.color] || colorBadge.violet)}>{p.subjects.name}</span>}
+                        {p.due_date && <span className={clsx('text-xs', fine.daysOverdue > 0 ? 'text-red-500 font-medium' : 'text-gray-400')}>
+                          Due {p.due_date} {fine.daysOverdue > 0 && `· ${fine.daysOverdue} day${fine.daysOverdue !== 1 ? 's' : ''} overdue`}
+                        </span>}
+                        {p.invoice_number && <span className="text-xs text-gray-400">Inv #{p.invoice_number}</span>}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3 flex-shrink-0">
+                      {/* Fine toggle + display */}
+                      <label className="flex items-center gap-1.5 cursor-pointer" title="Enable/disable 5% per 15-day late fine">
+                        <input type="checkbox" checked={fineEnabled} onChange={e => toggleFineEnabled(p, e.target.checked)} className="rounded border-gray-300 text-rose-500 w-3.5 h-3.5"/>
+                        <span className="text-xs text-gray-400">Fine</span>
+                      </label>
+
+                      {fineEnabled && fine.fineAmount > 0 && (
+                        <div className="text-right">
+                          <div className="text-xs text-rose-600 font-semibold">+{fmt(fine.fineAmount)} ({fine.finePct}%)</div>
+                          <div className="text-xs text-gray-400">{fine.periods} period{fine.periods !== 1 ? 's' : ''} × 15d</div>
+                        </div>
+                      )}
+
+                      <div className="text-right">
+                        <div className="text-sm font-bold text-gray-900">{fmt(p.amount + (fineEnabled ? fine.fineAmount : 0))}</div>
+                        <div className="text-xs text-gray-400">base {fmt(p.amount)}</div>
+                      </div>
+
+                      <button
+                        onClick={() => sendFineReminder(p)}
+                        disabled={sendingFine[p.id] || (!p.students?.email && !p.student_email)}
+                        title={(!p.students?.email && !p.student_email) ? 'No email on file' : 'Send reminder with updated invoice'}
+                        className="btn btn-sm text-brand-600 border-brand-200 hover:bg-brand-50"
+                      >
+                        {sendingFine[p.id] ? <Loader2 className="w-3.5 h-3.5 animate-spin"/> : <Mail className="w-3.5 h-3.5"/>}
+                      </button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )
+      })}
+
+      <div className="bg-gray-50 rounded-xl p-4 border border-gray-200">
+        <p className="text-xs text-gray-500">
+          <strong>Auto-fine policy:</strong> 5% of the outstanding amount is added for every 15 days a payment remains overdue past its due date.
+          Reminder emails with the updated invoice (including fines) are sent automatically every 15 days via the scheduled job — toggle the <strong>Fine</strong> checkbox per payment to exempt a student.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+
 function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
   const supabase=sb()
   const [tab,setTab]=useState('all');const [open,setOpen]=useState(false);const [importOpen,setImportOpen]=useState(false)
+  const [viewMode,setViewMode]=useState<'list'|'pending_by_month'>('list')
   const [invoice,setInvoice]=useState<any>(null);const [reminder,setReminder]=useState<any>(null)
-  const emptyForm = {student_id:'',subject_id:'',month_label:'',amount:'',payment_date:'',mode_of_payment:'UPI',receipt_number:'',invoice_number:'',description:'',notes:'',status:'paid',discount:''}
+  const emptyForm = {student_id:'',subject_id:'',month_label:'',amount:'',payment_date:'',due_date:'',mode_of_payment:'UPI',receipt_number:'',invoice_number:'',description:'',notes:'',status:'paid',discount:''}
   const [form,setForm]=useState<any>(emptyForm)
   const [editing,setEditing]=useState<any>(null)
   const [busy,setBusy]=useState(false);const [importResult,setImportResult]=useState('');const [q,setQ]=useState('')
@@ -2046,6 +2185,38 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
   const paid=payments.filter((p:any)=>p.status==='paid').reduce((a:number,p:any)=>a+p.amount,0)
   const pending=payments.filter((p:any)=>p.status==='pending').reduce((a:number,p:any)=>a+p.amount,0)
   const failed=payments.filter((p:any)=>p.status==='failed').length
+
+  // Pending/overdue payments with computed fines
+  const pendingPayments = payments.filter((p:any)=>p.status==='pending'||p.status==='overdue')
+  const totalFinesOutstanding = pendingPayments.reduce((sum:number,p:any)=>sum+calcLateFine(p).fineAmount,0)
+
+  const [sendingFine,setSendingFine]=useState<Record<string,boolean>>({})
+  async function sendFineReminder(payment:any){
+    if(!payment.student_email&&!payment.students?.email)return
+    const email=payment.students?.email||payment.student_email
+    const name=payment.students?.full_name||payment.student_name
+    setSendingFine(s=>({...s,[payment.id]:true}))
+    const fine=calcLateFine(payment)
+    await fetch('/api/email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      type:'fine_reminder',
+      studentEmail:email,
+      studentName:name,
+      invoiceData:{
+        invoiceNo:payment.invoice_number||payment.id.slice(0,6),
+        subjectName:payment.subjects?.name||payment.description||'Tuition',
+        monthLabel:payment.month_label||'',
+        rawAmount:payment.amount,
+        fineAmount:fine.fineAmount,
+        finePct:fine.finePct,
+        daysOverdue:fine.daysOverdue,
+        dueDate:payment.due_date,
+        finalAmount:payment.amount+fine.fineAmount,
+      }
+    })})
+    await supabase.from('payments').update({fine_amount:fine.fineAmount,last_fine_reminder_at:new Date().toISOString()}).eq('id',payment.id)
+    setSendingFine(s=>({...s,[payment.id]:false}))
+    reload()
+  }
 
   function openAdd(){setEditing(null);setForm(emptyForm);setOpen(true)}
   function openEdit(p:any){
@@ -2056,6 +2227,7 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
       month_label: p.month_label||months[0],
       amount: String(p.amount||''),
       payment_date: p.payment_date||'',
+      due_date: p.due_date||'',
       mode_of_payment: p.mode_of_payment||'UPI',
       receipt_number: p.receipt_number||'',
       invoice_number: p.invoice_number||'',
@@ -2080,6 +2252,7 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
     const payload:any={
       amount:+form.amount,
       payment_date:form.payment_date||new Date().toISOString().slice(0,10),
+      due_date:form.due_date||null,
       status:form.status||'paid',
       month_label:form.month_label||months[0],
       mode_of_payment:form.mode_of_payment,
@@ -2153,12 +2326,24 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
         {importResult.startsWith('⏳')&&<Loader2 className="w-4 h-4 animate-spin flex-shrink-0"/>}
         {importResult}
       </div>}
-      <div className="grid grid-cols-4 gap-4 mb-5">
+      <div className="grid grid-cols-5 gap-4 mb-5">
         <div className="card p-4 bg-emerald-50 border-emerald-100"><div className="text-xs text-emerald-600 mb-1">Collected</div><div className="text-xl font-semibold text-emerald-700">{fmt(paid)}</div></div>
         <div className="card p-4 bg-amber-50 border-amber-100"><div className="text-xs text-amber-600 mb-1">Pending</div><div className="text-xl font-semibold text-amber-700">{fmt(pending)}</div></div>
+        <div className="card p-4 bg-rose-50 border-rose-100"><div className="text-xs text-rose-600 mb-1">Fines Outstanding</div><div className="text-xl font-semibold text-rose-700">{fmt(totalFinesOutstanding)}</div></div>
         <div className="card p-4 bg-red-50 border-red-100"><div className="text-xs text-red-500 mb-1">Failed Txns</div><div className="text-xl font-semibold text-red-600">{failed}</div></div>
         <div className="card p-4 bg-blue-50 border-blue-100"><div className="text-xs text-blue-600 mb-1">Total Records</div><div className="text-xl font-semibold text-blue-700">{payments.length}</div></div>
       </div>
+
+      <div className="flex rounded-xl border border-gray-200 overflow-hidden w-fit mb-4">
+        <button onClick={()=>setViewMode('list')} className={clsx('px-4 py-2 text-sm font-medium transition-colors',viewMode==='list'?'bg-brand-500 text-white':'text-gray-500 hover:bg-gray-50')}>All Payments</button>
+        <button onClick={()=>setViewMode('pending_by_month')} className={clsx('px-4 py-2 text-sm font-medium transition-colors',viewMode==='pending_by_month'?'bg-amber-500 text-white':'text-gray-500 hover:bg-gray-50')}>
+          Pending by Month {pendingPayments.length>0 && <span className="ml-1 opacity-80">({pendingPayments.length})</span>}
+        </button>
+      </div>
+
+      {viewMode==='pending_by_month' ? (
+        <PendingByMonthView payments={payments} reload={reload} supabase={supabase} sendFineReminder={sendFineReminder} sendingFine={sendingFine}/>
+      ) : (
       <div className="card">
         <div className="flex items-center justify-between border-b border-gray-100 px-4 pt-2 pb-0">
           <div className="flex">{['all','paid','pending','overdue','failed'].map(t=><button key={t} onClick={()=>setTab(t)} className={clsx('px-3 py-2.5 text-sm font-medium border-b-2 transition-colors capitalize',tab===t?'border-brand-500 text-brand-600':'border-transparent text-gray-400 hover:text-gray-600')}>{t}<span className={clsx('ml-1 text-xs px-1.5 py-0.5 rounded-full',tab===t?'bg-brand-50 text-brand-600':'bg-gray-100 text-gray-400')}>{t==='all'?payments.length:payments.filter((p:any)=>p.status===t).length}</span></button>)}</div>
@@ -2192,6 +2377,7 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
           </table>
         </div>
       </div>
+      )}
 
       {/* Record / Edit payment */}
       <Modal open={open} onClose={()=>setOpen(false)} title={editing?'Edit Payment':'Record Payment'} wide>
@@ -2212,6 +2398,7 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
           <div><label className="label">Discount (₹)</label><input className="input" type="number" value={form.discount} onChange={e=>setForm((f:any)=>({...f,discount:e.target.value}))} placeholder="0"/></div>
           <div><label className="label">Month</label><select className="input" value={form.month_label} onChange={e=>setForm((f:any)=>({...f,month_label:e.target.value}))}>{months.map(m=><option key={m}>{m}</option>)}</select></div>
           <div><label className="label">Payment Date</label><input className="input" type="date" value={form.payment_date} onChange={e=>setForm((f:any)=>({...f,payment_date:e.target.value}))}/></div>
+          <div><label className="label">Due Date</label><input className="input" type="date" value={form.due_date} onChange={e=>setForm((f:any)=>({...f,due_date:e.target.value}))}/></div>
           <div><label className="label">Mode of Payment</label><select className="input" value={form.mode_of_payment} onChange={e=>setForm((f:any)=>({...f,mode_of_payment:e.target.value}))}>{PAY_MODES.map(m=><option key={m}>{m}</option>)}</select></div>
           <div><label className="label">Receipt #</label><input className="input" value={form.receipt_number} onChange={e=>setForm((f:any)=>({...f,receipt_number:e.target.value}))}/></div>
           <div><label className="label">Invoice #</label><input className="input" value={form.invoice_number} onChange={e=>setForm((f:any)=>({...f,invoice_number:e.target.value}))}/></div>
@@ -3140,6 +3327,7 @@ function RaiseInvoicePanel({ student, subjects, packages, fees, supabase, reload
       payment_date:    form.status === 'paid' ? new Date().toISOString().slice(0,10) : null,
       status:          form.status,
       month_label:     form.month_label,
+      due_date:        form.due_date || null,
       invoice_number:  invoiceNo.replace('INV-',''),
       mode_of_payment: form.mode_of_payment,
       description:     selectedPkg ? selectedPkg.name : (selectedSub?.name || ''),
@@ -5113,6 +5301,7 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
         status:          p.invoice_status,
         payment_date:    p.invoice_status === 'paid' ? new Date().toISOString().slice(0,10) : null,
         month_label:     p.invoice_month,
+        due_date:        p.invoice_due || null,
         invoice_number:  invoiceNo.replace('INV-',''),
         mode_of_payment: p.invoice_mode,
         description:     selectedPkg?.name || selectedSub?.name || 'Tuition',

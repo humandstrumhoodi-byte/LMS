@@ -279,5 +279,79 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ...r, dev: !createTransporter() })
   }
 
+  // ── Late payment fine reminder — updated invoice with fine ──
+  if (type === 'fine_reminder') {
+    const { studentEmail, studentName, invoiceData } = body
+    if (!studentEmail) return NextResponse.json({ error: 'No email for this student' }, { status: 400 })
+
+    const { invoiceNo, subjectName, monthLabel, rawAmount, fineAmount, finePct, daysOverdue, dueDate, finalAmount } = invoiceData
+
+    const logoUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://your-app.vercel.app'}/logo.png`
+    const upiId = 'truetoneacademy@sbi'
+    const phoneNumber = '+91 82960 12123'
+
+    const upiString = `upi://pay?pa=${upiId}&pn=${encodeURIComponent('Hum and Strum')}&am=${Number(finalAmount)}&cu=INR&tn=${encodeURIComponent(String(invoiceNo))}`
+    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=130x130&data=${encodeURIComponent(upiString)}`
+
+    const html = `
+      <div style="font-family:sans-serif;max-width:560px;margin:0 auto;background:#f9fafb;padding:16px">
+        <div style="background:#B91C1C;padding:20px 24px;border-radius:12px 12px 0 0;display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <div style="display:flex;align-items:center;gap:10px">
+              <img src="${logoUrl}" alt="" width="36" height="36" style="width:36px;height:36px;border-radius:50%;object-fit:cover;border:2px solid rgba(255,255,255,0.3)" onerror="this.style.display='none'"/>
+              <div style="color:white;font-size:18px;font-weight:700">⚠️ Payment Overdue</div>
+            </div>
+            <div style="color:rgba(255,255,255,0.75);font-size:12px;margin-top:3px">Hum and Strum Music School, Hoodi</div>
+          </div>
+          <div style="text-align:right">
+            <div style="color:rgba(255,255,255,0.6);font-size:10px;text-transform:uppercase">Invoice</div>
+            <div style="color:white;font-size:14px;font-weight:700;font-family:monospace">${invoiceNo}</div>
+          </div>
+        </div>
+        <div style="background:white;padding:24px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px">
+          <p style="color:#374151">Hi <strong>${studentName}</strong>,</p>
+          <p style="color:#374151">Your payment for <strong>${subjectName}</strong> (${monthLabel}) is overdue by <strong style="color:#dc2626">${daysOverdue} day${daysOverdue !== 1 ? 's' : ''}</strong>${dueDate ? ` (due ${dueDate})` : ''}. A late fee has been applied as per our payment policy.</p>
+
+          <table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:13px">
+            <tr style="border-bottom:1px solid #f3f4f6"><td style="padding:8px 0;color:#6b7280">Original Amount</td><td style="padding:8px 0;text-align:right;font-weight:500">₹${Number(rawAmount).toLocaleString('en-IN')}</td></tr>
+            <tr style="border-bottom:1px solid #f3f4f6"><td style="padding:8px 0;color:#dc2626">Late Fee (${finePct}% — ${Math.ceil(daysOverdue/15)} period${Math.ceil(daysOverdue/15) !== 1 ? 's' : ''} × 5%/15 days)</td><td style="padding:8px 0;text-align:right;color:#dc2626;font-weight:600">+₹${Number(fineAmount).toLocaleString('en-IN')}</td></tr>
+          </table>
+
+          <div style="background:#B91C1C;border-radius:10px;padding:14px 18px;display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+            <span style="color:rgba(255,255,255,0.85);font-size:13px;font-weight:500">Total Amount Due Now</span>
+            <span style="color:white;font-size:22px;font-weight:700">₹${Number(finalAmount).toLocaleString('en-IN')}</span>
+          </div>
+
+          <!-- Pay now with QR -->
+          <div style="border:2px solid #fecaca;border-radius:12px;padding:16px;margin-bottom:16px;background:#fef2f2">
+            <div style="font-size:13px;color:#991b1b;font-weight:700;margin-bottom:12px;text-align:center">📲 Pay Now to Avoid Further Fees</div>
+            <div style="display:flex;align-items:center;gap:16px">
+              <img src="${qrUrl}" alt="UPI QR" width="120" height="120" style="border-radius:8px;border:1px solid #fecaca"/>
+              <div>
+                <div style="font-size:11px;color:#991b1b;font-weight:600;text-transform:uppercase">Pay via UPI</div>
+                <div style="font-size:16px;color:#b91c1c;font-weight:700;font-family:monospace">${upiId}</div>
+                <div style="margin-top:8px;padding:6px 10px;background:#fee2e2;border-radius:6px;display:inline-block">
+                  <span style="font-size:14px;font-weight:700;color:#991b1b">₹${Number(finalAmount).toLocaleString('en-IN')}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Prominent phone number -->
+          <div style="background:#f0f0ff;border-radius:10px;padding:14px;text-align:center;margin-bottom:16px">
+            <p style="color:#3B1F8C;font-size:13px;margin:0 0 8px">Already paid, or have a question? Call or WhatsApp us:</p>
+            <a href="tel:${phoneNumber.replace(/\s/g,'')}" style="display:inline-block;background:#3B1F8C;color:white;font-size:17px;font-weight:700;text-decoration:none;padding:8px 18px;border-radius:8px">📞 ${phoneNumber}</a>
+          </div>
+
+          <p style="color:#9ca3af;font-size:11px;text-align:center;border-top:1px solid #f3f4f6;padding-top:12px">
+            Note: an additional 5% fee will be added for every further 15 days of delay. Hum and Strum Music School · Hoodi, Bengaluru
+          </p>
+        </div>
+      </div>`
+
+    const r = await sendEmail(studentEmail, `⚠️ Overdue: ₹${Number(finalAmount).toLocaleString('en-IN')} due for ${subjectName} — Hum and Strum`, html)
+    return NextResponse.json({ ...r, dev: !createTransporter() })
+  }
+
   return NextResponse.json({ error: 'Unknown type' }, { status: 400 })
 }
