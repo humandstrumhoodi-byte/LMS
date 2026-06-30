@@ -247,22 +247,31 @@ export async function POST(req: NextRequest) {
     const { studentEmail, studentName, customMessage } = body
     if (!studentEmail) return NextResponse.json({ error: 'No email for this student' }, { status: 400 })
 
+    const logoUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://your-app.vercel.app'}/logo.png`
+    const phoneNumber = '+91 82960 12123'
+
     const html = `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto">
-        <div style="background:#3B1F8C;padding:20px 24px;border-radius:12px 12px 0 0">
-          <div style="color:white;font-size:18px;font-weight:700">🎵 We Miss You!</div>
-          <div style="color:rgba(255,255,255,0.7);font-size:12px;margin-top:3px">Hum &amp; Strum Music Academy</div>
+        <div style="background:#3B1F8C;padding:20px 24px;border-radius:12px 12px 0 0;display:flex;align-items:center;gap:12px">
+          <img src="${logoUrl}" alt="" width="40" height="40" style="width:40px;height:40px;border-radius:50%;object-fit:cover;border:2px solid rgba(255,255,255,0.3)" onerror="this.style.display='none'"/>
+          <div>
+            <div style="color:white;font-size:18px;font-weight:700">🎵 We Miss You!</div>
+            <div style="color:rgba(255,255,255,0.7);font-size:12px;margin-top:3px">Hum and Strum Music School, Hoodi</div>
+          </div>
         </div>
         <div style="background:white;padding:24px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px">
           <p style="color:#374151">Hi <strong>${studentName}</strong>,</p>
-          <p style="color:#374151">It's been a while since we've seen you at the academy! We'd love to have you back.</p>
+          <p style="color:#374151">It's been a while since we've seen you at the school! We'd love to have you back.</p>
           ${customMessage ? `<p style="color:#374151;font-size:13px;border-left:3px solid #7B5FC4;padding-left:12px;margin:16px 0">${customMessage}</p>` : ''}
           <div style="background:#f0f0ff;border-radius:10px;padding:16px;margin:16px 0;text-align:center">
-            <p style="color:#3B1F8C;font-weight:600;margin:0 0 8px">Ready to resume your classes?</p>
-            <p style="color:#6b7280;font-size:13px;margin:0">Reply to this email or call us to pick up where you left off.</p>
+            <p style="color:#3B1F8C;font-weight:600;margin:0 0 10px">Ready to resume your classes?</p>
+            <p style="color:#6b7280;font-size:13px;margin:0 0 12px">Call or WhatsApp us anytime to pick up where you left off:</p>
+            <div style="background:#3B1F8C;border-radius:8px;padding:10px 16px;display:inline-block">
+              <a href="tel:${phoneNumber.replace(/\s/g,'')}" style="color:white;font-size:18px;font-weight:700;text-decoration:none;letter-spacing:0.3px">📞 ${phoneNumber}</a>
+            </div>
           </div>
           <hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0"/>
-          <p style="color:#9ca3af;font-size:11px;text-align:center">Hum &amp; Strum Music Academy · Hoodi, Bengaluru · +91 97312 70069</p>
+          <p style="color:#9ca3af;font-size:11px;text-align:center">Hum and Strum Music School · Hoodi, Bengaluru</p>
         </div>
       </div>`
 
