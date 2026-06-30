@@ -517,23 +517,55 @@ function HomeTab({profile,perms,students,profiles,payments,schedules,subjects,le
   const [paymentDrilldown,setPaymentDrilldown]=useState<{title:string;list:any[];color:string}|null>(null)
 
   function StudentDrilldown({title,list}:{title:string;list:any[]}){
+    const [statusFilter,setStatusFilter]=useState<string|null>(null)
+    const statusCounts=STUDENT_STATUSES.map(st=>({
+      ...st,
+      count:list.filter((s:any)=>(s.status||'Active')===st.value).length,
+    })).filter(st=>st.count>0)
+    const filteredList=statusFilter?list.filter((s:any)=>(s.status||'Active')===statusFilter):list
+
     return(
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm" onClick={()=>setDrilldown(null)}>
         <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[80vh] flex flex-col animate-fu" onClick={e=>e.stopPropagation()}>
           <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
             <div>
               <h2 className="font-semibold text-gray-900">{title}</h2>
-              <p className="text-xs text-gray-400 mt-0.5">{list.length} students</p>
+              <p className="text-xs text-gray-400 mt-0.5">{filteredList.length} of {list.length} students{statusFilter?` · ${statusFilter}`:''}</p>
             </div>
             <div className="flex gap-2">
               <button onClick={()=>{setDrilldown(null);setTab('students')}} className="btn btn-sm">View All →</button>
               <button onClick={()=>setDrilldown(null)} className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100"><X className="w-4 h-4"/></button>
             </div>
           </div>
+
+          {/* Status breakdown — click a tile to filter */}
+          {statusCounts.length>1&&(
+            <div className="flex gap-1.5 px-5 py-3 border-b border-gray-100 overflow-x-auto">
+              <button
+                onClick={()=>setStatusFilter(null)}
+                className={clsx('flex-shrink-0 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all',
+                  !statusFilter?'bg-brand-500 text-white border-brand-500':'bg-gray-50 text-gray-500 border-gray-200 hover:border-gray-300'
+                )}>
+                All ({list.length})
+              </button>
+              {statusCounts.map(st=>(
+                <button
+                  key={st.value}
+                  onClick={()=>setStatusFilter(statusFilter===st.value?null:st.value)}
+                  className={clsx('flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all',
+                    statusFilter===st.value?st.color.replace('border-','border-2 border-'):'bg-white text-gray-500 border-gray-200 hover:border-gray-300'
+                  )}>
+                  <span className={clsx('w-1.5 h-1.5 rounded-full',st.dot)}/>
+                  {st.label} ({st.count})
+                </button>
+              ))}
+            </div>
+          )}
+
           <div className="overflow-y-auto flex-1">
-            {list.length===0
-              ? <div className="py-10 text-center text-gray-300">No students</div>
-              : list.map((s:any,i:number)=>{
+            {filteredList.length===0
+              ? <div className="py-10 text-center text-gray-300">No students{statusFilter?` with status "${statusFilter}"`:''}</div>
+              : filteredList.map((s:any,i:number)=>{
                   const subs=subjects.filter((sub:any)=>(s.student_subjects||[]).some((ss:any)=>ss.subject_id===sub.id))
                   return(
                     <div key={s.id} className="flex items-center justify-between px-5 py-3 border-b border-gray-50 last:border-0 hover:bg-gray-50/50">
@@ -546,7 +578,7 @@ function HomeTab({profile,perms,students,profiles,payments,schedules,subjects,le
                       </div>
                       <div className="flex items-center gap-2">
                         <div className="flex flex-wrap gap-1">{subs.slice(0,2).map((sub:any)=><span key={sub.id} className={clsx('badge text-xs',colorBadge[sub.color]||colorBadge.violet)}>{sub.code}</span>)}</div>
-                        <span className={clsx('badge text-xs',s.status==='Active'||!s.status?'bg-emerald-50 text-emerald-700':s.status==='Trial'?'bg-amber-50 text-amber-700':'bg-gray-100 text-gray-500')}>{s.status||'Active'}</span>
+                        <span className={clsx('badge text-xs',studentStatusStyle(s.status||'Active').color)}>{s.status||'Active'}</span>
                       </div>
                     </div>
                   )
@@ -666,7 +698,7 @@ function HomeTab({profile,perms,students,profiles,payments,schedules,subjects,le
 
         {/* ── By instrument ── */}
         <div className="card p-4 mb-4">
-          <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Students by Instrument</div>
+          <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Students by Instrument — click to see by status</div>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
             {subjects.map((sub:any)=>{
               const count=students.filter((s:any)=>(s.student_subjects||[]).some((ss:any)=>ss.subject_id===sub.id)).length
