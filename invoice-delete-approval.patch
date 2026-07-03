@@ -1,0 +1,281 @@
+diff --git a/src/components/DashboardShell.tsx b/src/components/DashboardShell.tsx
+index 55244e0..38f84c5 100644
+--- a/src/components/DashboardShell.tsx
++++ b/src/components/DashboardShell.tsx
+@@ -1768,13 +1768,24 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
+   }
+ 
+   const DAY_LABELS: Record<string,string> = { Sun:'Sunday', Tue:'Tuesday', Wed:'Wednesday', Thu:'Thursday', Fri:'Friday', Sat:'Saturday', Mon:'Monday' }
++  // Fallback hours (mirrors the seeded defaults in supabase/add_center_hours.sql) —
++  // used whenever centerHours hasn't loaded yet, or a day's row is missing/unreadable,
++  // so the calendar grid and time picker never silently render empty.
++  const DEFAULT_HOURS: Record<string,{open_time:string,close_time:string,is_closed:boolean}> = {
++    Sun:{open_time:'10:00',close_time:'20:00',is_closed:false},
++    Tue:{open_time:'15:00',close_time:'20:00',is_closed:false},
++    Wed:{open_time:'15:00',close_time:'20:00',is_closed:false},
++    Thu:{open_time:'15:00',close_time:'20:00',is_closed:false},
++    Fri:{open_time:'15:00',close_time:'20:00',is_closed:false},
++    Sat:{open_time:'10:00',close_time:'20:00',is_closed:false},
++  }
+   const WORKING_DAYS = centerHours.length
+     ? centerHours.filter((h:any)=>!h.is_closed).map((h:any)=>h.day_of_week).sort((a:string,b:string)=>['Sun','Tue','Wed','Thu','Fri','Sat'].indexOf(a)-['Sun','Tue','Wed','Thu','Fri','Sat'].indexOf(b))
+     : ['Sun','Tue','Wed','Thu','Fri','Sat'] // fallback while loading
+ 
+   // 60-minute slots, computed per-day from open/close time (union across all working days for the grid)
+   function hourSlotsForDay(day:string):string[] {
+-    const h = centerHours.find((c:any)=>c.day_of_week===day)
++    const h = centerHours.find((c:any)=>c.day_of_week===day) || DEFAULT_HOURS[day]
+     if (!h || h.is_closed) return []
+     const slots:string[] = []
+     let [oh] = h.open_time.split(':').map(Number)
+@@ -3324,6 +3335,96 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
+   const [editPayment, setEditPayment] = useState<any>(null)
+   const [sendingPaid, setSendingPaid] = useState<Record<string, boolean>>({})
+   const [paidSentIds, setPaidSentIds] = useState<Record<string, boolean>>({})
++  const [markingPaidIds, setMarkingPaidIds] = useState<Record<string, boolean>>({})
++
++  // ── Invoice deletion: center_manager requests, superadmin approves/rejects ──
++  const [deleteRequests, setDeleteRequests] = useState<any[]>([])
++  const [deleteTarget, setDeleteTarget] = useState<any>(null)      // payment being requested/deleted
++  const [deleteReason, setDeleteReason] = useState('')
++  const [deleteBusy, setDeleteBusy] = useState(false)
++  const [reviewingReq, setReviewingReq] = useState<any>(null)      // superadmin: reviewing a pending request
++  const [reviewNote, setReviewNote] = useState('')
++  const [reviewBusy, setReviewBusy] = useState(false)
++
++  useEffect(() => { loadDeleteRequests() }, [student.id])
++  async function loadDeleteRequests() {
++    const r = await fetch(`/api/invoice-delete-requests?student_id=${student.id}`)
++    const d = await r.json()
++    setDeleteRequests(d.requests || [])
++  }
++  const pendingDeleteFor = (paymentId: string) => deleteRequests.find((r:any) => r.payment_id === paymentId && r.status === 'pending')
++  const pendingDeleteReqs = deleteRequests.filter((r:any) => r.status === 'pending')
++
++  // Superadmin: delete immediately (no self-approval needed, already the approver).
++  async function deleteDirectly(p: any) {
++    if (!confirm(`Permanently delete invoice ${p.invoice_number ? '#'+p.invoice_number : ''} for ${fmt(p.amount)}? This cannot be undone.`)) return
++    setDeleteBusy(true)
++    const { error } = await supabase.from('payments').delete().eq('id', p.id)
++    if (!error) {
++      await supabase.from('billing_audit_log').insert({
++        payment_id: null,
++        student_id: student.id,
++        changed_by: profile?.id || null,
++        changed_by_name: profile?.full_name || 'Unknown',
++        field_changes: { deleted: { old: p, new: null } },
++        reason: 'Invoice deleted directly by superadmin',
++      })
++      reload()
++    } else {
++      alert(error.message)
++    }
++    setDeleteBusy(false)
++  }
++
++  // center_manager: submit a delete request for superadmin approval
++  async function submitDeleteRequest() {
++    if (!deleteTarget) return
++    setDeleteBusy(true)
++    const r = await fetch('/api/invoice-delete-requests', {
++      method: 'POST', headers: { 'Content-Type': 'application/json' },
++      body: JSON.stringify({ payment_id: deleteTarget.id, reason: deleteReason }),
++    })
++    const d = await r.json()
++    setDeleteBusy(false)
++    if (r.ok) { setDeleteTarget(null); setDeleteReason(''); loadDeleteRequests() }
++    else alert(d.error || 'Error submitting request')
++  }
++
++  async function reviewDeleteRequest(action: 'approve'|'reject') {
++    if (!reviewingReq) return
++    setReviewBusy(true)
++    const r = await fetch('/api/invoice-delete-requests', {
++      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
++      body: JSON.stringify({ request_id: reviewingReq.id, action, review_note: reviewNote }),
++    })
++    const d = await r.json()
++    setReviewBusy(false)
++    if (r.ok) { setReviewingReq(null); setReviewNote(''); loadDeleteRequests(); reload() }
++    else alert(d.error || 'Error reviewing request')
++  }
++
++  // Quick one-click "Mark as Paid" — sets status to paid + today's date without
++  // opening the full historical-billing edit form. Still writes an audit log entry.
++  async function markAsPaid(p: any) {
++    if (!confirm(`Mark invoice ${p.invoice_number ? '#' + p.invoice_number : ''} as paid for ${fmt(p.amount)}?`)) return
++    setMarkingPaidIds(m => ({ ...m, [p.id]: true }))
++    const today = new Date().toISOString().slice(0, 10)
++    const { error } = await supabase.from('payments').update({ status: 'paid', payment_date: today }).eq('id', p.id)
++    if (!error) {
++      await supabase.from('billing_audit_log').insert({
++        payment_id: p.id,
++        student_id: student.id,
++        changed_by: profile?.id || null,
++        changed_by_name: profile?.full_name || 'Unknown',
++        field_changes: { status: { old: p.status, new: 'paid' }, payment_date: { old: p.payment_date || null, new: today } },
++        reason: 'Marked paid (quick action)',
++      })
++      reload()
++    } else {
++      alert(error.message)
++    }
++    setMarkingPaidIds(m => ({ ...m, [p.id]: false }))
++  }
+ 
+   const totalPaid    = payments.filter((p:any) => p.status === 'paid').reduce((a:number,p:any) => a + p.amount, 0)
+   const totalPending = payments.filter((p:any) => p.status === 'pending' || p.status === 'overdue').reduce((a:number,p:any) => a + p.amount, 0)
+@@ -3598,6 +3699,29 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
+           {/* ── INVOICES / ALL TRANSACTIONS TAB ── */}
+           {activeTab === 'invoices' && (
+             <div>
++              {/* Pending deletion requests — superadmin review queue */}
++              {isSuperadmin && pendingDeleteReqs.length > 0 && (
++                <div className="card mb-4 border-amber-200 overflow-hidden">
++                  <div className="px-4 py-3 bg-amber-50 border-b border-amber-100 flex items-center gap-2">
++                    <AlertCircle className="w-4 h-4 text-amber-600"/>
++                    <span className="text-sm font-semibold text-amber-800">{pendingDeleteReqs.length} invoice deletion request{pendingDeleteReqs.length!==1?'s':''} awaiting your approval</span>
++                  </div>
++                  {pendingDeleteReqs.map((r:any)=>(
++                    <div key={r.id} className="flex items-center justify-between px-4 py-3 border-b border-gray-50 last:border-0">
++                      <div>
++                        <div className="text-sm font-medium text-gray-900">
++                          {r.payments?.invoice_number ? `Invoice #${r.payments.invoice_number}` : 'Invoice'} · {fmt(r.payments?.amount||0)}
++                        </div>
++                        <div className="text-xs text-gray-400">
++                          Requested by {r.requested_by_name||'—'} {r.reason && <>· "{r.reason}"</>}
++                        </div>
++                      </div>
++                      <button onClick={()=>{setReviewingReq(r);setReviewNote('')}} className="btn btn-sm text-brand-600 border-brand-200 hover:bg-brand-50">Review</button>
++                    </div>
++                  ))}
++                </div>
++              )}
++
+               {payments.length === 0
+                 ? <div className="text-center py-10 text-gray-300">No transactions found</div>
+                 : (
+@@ -3612,11 +3736,13 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
+                         <th className="th text-right">Discount</th>
+                         <th className="th text-right">Amount</th>
+                         <th className="th">Status</th>
+-                        <th className="th w-24">Actions</th>
++                        <th className="th w-32">Actions</th>
+                       </tr>
+                     </thead>
+                     <tbody>
+-                      {payments.map((p:any) => (
++                      {payments.map((p:any) => {
++                        const pendingDel = pendingDeleteFor(p.id)
++                        return (
+                         <tr key={p.id} className={clsx('hover:bg-gray-50/50', p.status==='failed'&&'opacity-40')}>
+                           <td className="td text-gray-500 whitespace-nowrap">{p.payment_date||'—'}</td>
+                           <td className="td text-gray-400 whitespace-nowrap">
+@@ -3637,11 +3763,24 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
+                           <td className="td text-gray-400">{p.mode_of_payment||'—'}</td>
+                           <td className="td text-right text-blue-600">{p.discount>0?`-${fmt(p.discount)}`:''}</td>
+                           <td className="td text-right font-semibold">{fmt(p.amount)}</td>
+-                          <td className="td"><span className={statusBadge(p.status)}>{p.status}</span></td>
++                          <td className="td">
++                            <span className={statusBadge(p.status)}>{p.status}</span>
++                            {pendingDel && <div className="text-xs text-amber-600 mt-1">Deletion pending</div>}
++                          </td>
+                           <td className="td">
+                             <div className="flex gap-1">
+-                              <button onClick={()=>setEditPayment(p)} title="Edit this historical billing record" className="btn btn-sm"><Edit className="w-3 h-3"/></button>
+-                              {p.status==='paid'&&student.email&&(
++                              {(p.status==='pending'||p.status==='overdue')&&!pendingDel&&(
++                                <button
++                                  onClick={()=>markAsPaid(p)}
++                                  disabled={markingPaidIds[p.id]}
++                                  title="Mark as paid"
++                                  className="btn btn-sm text-emerald-600 border-emerald-200 hover:bg-emerald-50"
++                                >
++                                  {markingPaidIds[p.id]?<Loader2 className="w-3 h-3 animate-spin"/>:<CheckCircle className="w-3 h-3"/>}
++                                </button>
++                              )}
++                              {!pendingDel&&<button onClick={()=>setEditPayment(p)} title="Edit this historical billing record" className="btn btn-sm"><Edit className="w-3 h-3"/></button>}
++                              {p.status==='paid'&&student.email&&!pendingDel&&(
+                                 <button
+                                   onClick={()=>sendPaidConfirmation(p)}
+                                   disabled={sendingPaid[p.id]}
+@@ -3651,10 +3790,20 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
+                                   {sendingPaid[p.id]?<Loader2 className="w-3 h-3 animate-spin"/>:paidSentIds[p.id]?<CheckCircle className="w-3 h-3"/>:<Mail className="w-3 h-3"/>}
+                                 </button>
+                               )}
++                              {!pendingDel&&(
++                                <button
++                                  onClick={()=>isSuperadmin?deleteDirectly(p):setDeleteTarget(p)}
++                                  disabled={deleteBusy}
++                                  title={isSuperadmin?'Delete invoice':'Request deletion (needs superadmin approval)'}
++                                  className="btn btn-sm text-red-500 border-red-200 hover:bg-red-50"
++                                >
++                                  <Trash2 className="w-3 h-3"/>
++                                </button>
++                              )}
+                             </div>
+                           </td>
+                         </tr>
+-                      ))}
++                      )})}
+                     </tbody>
+                     <tfoot>
+                       <tr className="bg-gray-50">
+@@ -3702,6 +3851,57 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
+           onSaved={()=>{setEditPayment(null);reload()}}
+         />
+       )}
++
++      {/* ── Request invoice deletion (center_manager) ── */}
++      {deleteTarget && (
++        <Modal open={!!deleteTarget} onClose={()=>{setDeleteTarget(null);setDeleteReason('')}} title="Request Invoice Deletion">
++          <div className="space-y-3">
++            <div className="bg-amber-50 border border-amber-100 rounded-xl p-3 text-xs text-amber-700">
++              This will send a deletion request to the super admin for approval. The invoice stays visible until reviewed.
++            </div>
++            <div className="text-sm text-gray-600">
++              {deleteTarget.invoice_number ? `Invoice #${deleteTarget.invoice_number}` : 'Invoice'} · {fmt(deleteTarget.amount)} · {deleteTarget.month_label||'—'}
++            </div>
++            <div>
++              <label className="label">Reason (e.g. "raised by mistake")</label>
++              <textarea className="input min-h-[60px] resize-none" value={deleteReason} onChange={e=>setDeleteReason(e.target.value)} placeholder="Why should this invoice be deleted?"/>
++            </div>
++            <div className="flex justify-end gap-2 pt-2">
++              <button className="btn" onClick={()=>{setDeleteTarget(null);setDeleteReason('')}}>Cancel</button>
++              <button className="btn-primary bg-red-500 hover:bg-red-600 border-red-500" onClick={submitDeleteRequest} disabled={deleteBusy}>
++                {deleteBusy?<Loader2 className="w-4 h-4 animate-spin"/>:<Trash2 className="w-4 h-4"/>} Send Request
++              </button>
++            </div>
++          </div>
++        </Modal>
++      )}
++
++      {/* ── Review deletion request (superadmin) ── */}
++      {reviewingReq && (
++        <Modal open={!!reviewingReq} onClose={()=>{setReviewingReq(null);setReviewNote('')}} title="Review Deletion Request">
++          <div className="space-y-3">
++            <div className="bg-red-50 border border-red-100 rounded-xl p-3 text-sm text-red-700">
++              Approving will <strong>permanently delete</strong> this invoice. This cannot be undone.
++            </div>
++            <div className="text-sm text-gray-600 space-y-1">
++              <div>{reviewingReq.payments?.invoice_number ? `Invoice #${reviewingReq.payments.invoice_number}` : 'Invoice'} · {fmt(reviewingReq.payments?.amount||0)} · {reviewingReq.payments?.month_label||'—'}</div>
++              <div className="text-gray-400">Requested by {reviewingReq.requested_by_name||'—'}</div>
++              {reviewingReq.reason && <div className="text-gray-400 italic">"{reviewingReq.reason}"</div>}
++            </div>
++            <div>
++              <label className="label">Note (optional)</label>
++              <textarea className="input min-h-[50px] resize-none" value={reviewNote} onChange={e=>setReviewNote(e.target.value)}/>
++            </div>
++            <div className="flex justify-end gap-2 pt-2">
++              <button className="btn" onClick={()=>{setReviewingReq(null);setReviewNote('')}}>Cancel</button>
++              <button className="btn" onClick={()=>reviewDeleteRequest('reject')} disabled={reviewBusy}>Reject</button>
++              <button className="btn-primary bg-red-500 hover:bg-red-600 border-red-500" onClick={()=>reviewDeleteRequest('approve')} disabled={reviewBusy}>
++                {reviewBusy?<Loader2 className="w-4 h-4 animate-spin"/>:<Trash2 className="w-4 h-4"/>} Approve & Delete
++              </button>
++            </div>
++          </div>
++        </Modal>
++      )}
+     </div>
+   )
+ }
