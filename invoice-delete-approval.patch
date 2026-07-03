@@ -1,5 +1,5 @@
 diff --git a/src/components/DashboardShell.tsx b/src/components/DashboardShell.tsx
-index 55244e0..38f84c5 100644
+index 55244e0..7feb3f5 100644
 --- a/src/components/DashboardShell.tsx
 +++ b/src/components/DashboardShell.tsx
 @@ -1768,13 +1768,24 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
@@ -28,7 +28,52 @@ index 55244e0..38f84c5 100644
      if (!h || h.is_closed) return []
      const slots:string[] = []
      let [oh] = h.open_time.split(':').map(Number)
-@@ -3324,6 +3335,96 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
+@@ -3106,7 +3117,7 @@ const BILLING_EDITABLE_FIELDS = [
+   { key: 'notes',           label: 'Notes',          type: 'text' },
+ ] as const
+ 
+-function BillingEditModal({ payment, subjects, student, profile, supabase, onClose, onSaved }: any) {
++function BillingEditModal({ payment, subjects, student, profile, supabase, onClose, onSaved, onDeleteInstead }: any) {
+   const [form, setForm] = useState<any>(() => {
+     const f: any = {}
+     BILLING_EDITABLE_FIELDS.forEach(field => { f[field.key] = payment[field.key] ?? '' })
+@@ -3129,6 +3140,16 @@ function BillingEditModal({ payment, subjects, student, profile, supabase, onClo
+     }
+   })
+   const hasChanges = Object.keys(changes).length > 0
++  const amountIsZero = Number(form.amount || 0) === 0
++
++  function goToConfirm() {
++    if (amountIsZero) {
++      const wantsDelete = confirm('Amount is ₹0 — did you mean to delete this invoice instead of saving it with a zero amount?\n\nOK = delete this invoice · Cancel = keep editing')
++      if (wantsDelete) { onDeleteInstead?.(payment); onClose(); return }
++      // else fall through and let them continue editing/saving as-is
++    }
++    if (hasChanges) setStep('confirm'); else onClose()
++  }
+ 
+   async function confirmSave() {
+     if (!hasChanges) { onClose(); return }
+@@ -3185,6 +3206,9 @@ function BillingEditModal({ payment, subjects, student, profile, supabase, onClo
+                   ) : (
+                     <input className="input" type={field.type} value={form[field.key]} onChange={e=>setForm((f:any)=>({...f,[field.key]:e.target.value}))}/>
+                   )}
++                  {field.key==='amount' && amountIsZero && (
++                    <p className="text-xs text-amber-600 mt-1">Amount is ₹0 — you'll be asked if you meant to delete this invoice instead.</p>
++                  )}
+                 </div>
+               ))}
+             </div>
+@@ -3228,7 +3252,7 @@ function BillingEditModal({ payment, subjects, student, profile, supabase, onClo
+               <button className="btn" onClick={onClose}>Cancel</button>
+               <button
+                 className="btn-primary"
+-                onClick={() => hasChanges ? setStep('confirm') : onClose()}
++                onClick={goToConfirm}
+                 disabled={!hasChanges}
+               >
+                 Review Changes →
+@@ -3324,6 +3348,112 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
    const [editPayment, setEditPayment] = useState<any>(null)
    const [sendingPaid, setSendingPaid] = useState<Record<string, boolean>>({})
    const [paidSentIds, setPaidSentIds] = useState<Record<string, boolean>>({})
@@ -45,9 +90,13 @@ index 55244e0..38f84c5 100644
 +
 +  useEffect(() => { loadDeleteRequests() }, [student.id])
 +  async function loadDeleteRequests() {
-+    const r = await fetch(`/api/invoice-delete-requests?student_id=${student.id}`)
-+    const d = await r.json()
-+    setDeleteRequests(d.requests || [])
++    try {
++      const r = await fetch(`/api/invoice-delete-requests?student_id=${student.id}`)
++      const d = await r.json()
++      setDeleteRequests(d.requests || [])
++    } catch (e) {
++      console.error('Failed to load delete requests', e)
++    }
 +  }
 +  const pendingDeleteFor = (paymentId: string) => deleteRequests.find((r:any) => r.payment_id === paymentId && r.status === 'pending')
 +  const pendingDeleteReqs = deleteRequests.filter((r:any) => r.status === 'pending')
@@ -77,27 +126,39 @@ index 55244e0..38f84c5 100644
 +  async function submitDeleteRequest() {
 +    if (!deleteTarget) return
 +    setDeleteBusy(true)
-+    const r = await fetch('/api/invoice-delete-requests', {
-+      method: 'POST', headers: { 'Content-Type': 'application/json' },
-+      body: JSON.stringify({ payment_id: deleteTarget.id, reason: deleteReason }),
-+    })
-+    const d = await r.json()
-+    setDeleteBusy(false)
-+    if (r.ok) { setDeleteTarget(null); setDeleteReason(''); loadDeleteRequests() }
-+    else alert(d.error || 'Error submitting request')
++    try {
++      const r = await fetch('/api/invoice-delete-requests', {
++        method: 'POST', headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({ payment_id: deleteTarget.id, reason: deleteReason }),
++      })
++      let d: any = {}
++      try { d = await r.json() } catch { /* non-JSON response, e.g. route missing */ }
++      if (r.ok) { setDeleteTarget(null); setDeleteReason(''); loadDeleteRequests() }
++      else alert(d.error || `Error submitting request (HTTP ${r.status}). If this persists, the invoice-delete-requests API/table may not be deployed yet — check with your admin.`)
++    } catch (e: any) {
++      alert('Network error submitting request: ' + (e?.message || e))
++    } finally {
++      setDeleteBusy(false)
++    }
 +  }
 +
 +  async function reviewDeleteRequest(action: 'approve'|'reject') {
 +    if (!reviewingReq) return
 +    setReviewBusy(true)
-+    const r = await fetch('/api/invoice-delete-requests', {
-+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-+      body: JSON.stringify({ request_id: reviewingReq.id, action, review_note: reviewNote }),
-+    })
-+    const d = await r.json()
-+    setReviewBusy(false)
-+    if (r.ok) { setReviewingReq(null); setReviewNote(''); loadDeleteRequests(); reload() }
-+    else alert(d.error || 'Error reviewing request')
++    try {
++      const r = await fetch('/api/invoice-delete-requests', {
++        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({ request_id: reviewingReq.id, action, review_note: reviewNote }),
++      })
++      let d: any = {}
++      try { d = await r.json() } catch { /* non-JSON response */ }
++      if (r.ok) { setReviewingReq(null); setReviewNote(''); loadDeleteRequests(); reload() }
++      else alert(d.error || `Error reviewing request (HTTP ${r.status})`)
++    } catch (e: any) {
++      alert('Network error reviewing request: ' + (e?.message || e))
++    } finally {
++      setReviewBusy(false)
++    }
 +  }
 +
 +  // Quick one-click "Mark as Paid" — sets status to paid + today's date without
@@ -125,7 +186,7 @@ index 55244e0..38f84c5 100644
  
    const totalPaid    = payments.filter((p:any) => p.status === 'paid').reduce((a:number,p:any) => a + p.amount, 0)
    const totalPending = payments.filter((p:any) => p.status === 'pending' || p.status === 'overdue').reduce((a:number,p:any) => a + p.amount, 0)
-@@ -3598,6 +3699,29 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
+@@ -3598,6 +3728,29 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
            {/* ── INVOICES / ALL TRANSACTIONS TAB ── */}
            {activeTab === 'invoices' && (
              <div>
@@ -155,7 +216,7 @@ index 55244e0..38f84c5 100644
                {payments.length === 0
                  ? <div className="text-center py-10 text-gray-300">No transactions found</div>
                  : (
-@@ -3612,11 +3736,13 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
+@@ -3612,11 +3765,13 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
                          <th className="th text-right">Discount</th>
                          <th className="th text-right">Amount</th>
                          <th className="th">Status</th>
@@ -171,7 +232,7 @@ index 55244e0..38f84c5 100644
                          <tr key={p.id} className={clsx('hover:bg-gray-50/50', p.status==='failed'&&'opacity-40')}>
                            <td className="td text-gray-500 whitespace-nowrap">{p.payment_date||'—'}</td>
                            <td className="td text-gray-400 whitespace-nowrap">
-@@ -3637,11 +3763,24 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
+@@ -3637,11 +3792,24 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
                            <td className="td text-gray-400">{p.mode_of_payment||'—'}</td>
                            <td className="td text-right text-blue-600">{p.discount>0?`-${fmt(p.discount)}`:''}</td>
                            <td className="td text-right font-semibold">{fmt(p.amount)}</td>
@@ -199,7 +260,7 @@ index 55244e0..38f84c5 100644
                                  <button
                                    onClick={()=>sendPaidConfirmation(p)}
                                    disabled={sendingPaid[p.id]}
-@@ -3651,10 +3790,20 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
+@@ -3651,10 +3819,20 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
                                    {sendingPaid[p.id]?<Loader2 className="w-3 h-3 animate-spin"/>:paidSentIds[p.id]?<CheckCircle className="w-3 h-3"/>:<Mail className="w-3 h-3"/>}
                                  </button>
                                )}
@@ -221,8 +282,11 @@ index 55244e0..38f84c5 100644
                      </tbody>
                      <tfoot>
                        <tr className="bg-gray-50">
-@@ -3702,6 +3851,57 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
+@@ -3700,8 +3878,60 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
+           supabase={supabase}
+           onClose={()=>setEditPayment(null)}
            onSaved={()=>{setEditPayment(null);reload()}}
++          onDeleteInstead={(p:any)=>{ isSuperadmin ? deleteDirectly(p) : setDeleteTarget(p) }}
          />
        )}
 +

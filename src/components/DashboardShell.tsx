@@ -3117,7 +3117,7 @@ const BILLING_EDITABLE_FIELDS = [
   { key: 'notes',           label: 'Notes',          type: 'text' },
 ] as const
 
-function BillingEditModal({ payment, subjects, student, profile, supabase, onClose, onSaved }: any) {
+function BillingEditModal({ payment, subjects, student, profile, supabase, onClose, onSaved, onDeleteInstead }: any) {
   const [form, setForm] = useState<any>(() => {
     const f: any = {}
     BILLING_EDITABLE_FIELDS.forEach(field => { f[field.key] = payment[field.key] ?? '' })
@@ -3140,6 +3140,16 @@ function BillingEditModal({ payment, subjects, student, profile, supabase, onClo
     }
   })
   const hasChanges = Object.keys(changes).length > 0
+  const amountIsZero = Number(form.amount || 0) === 0
+
+  function goToConfirm() {
+    if (amountIsZero) {
+      const wantsDelete = confirm('Amount is ₹0 — did you mean to delete this invoice instead of saving it with a zero amount?\n\nOK = delete this invoice · Cancel = keep editing')
+      if (wantsDelete) { onDeleteInstead?.(payment); onClose(); return }
+      // else fall through and let them continue editing/saving as-is
+    }
+    if (hasChanges) setStep('confirm'); else onClose()
+  }
 
   async function confirmSave() {
     if (!hasChanges) { onClose(); return }
@@ -3196,6 +3206,9 @@ function BillingEditModal({ payment, subjects, student, profile, supabase, onClo
                   ) : (
                     <input className="input" type={field.type} value={form[field.key]} onChange={e=>setForm((f:any)=>({...f,[field.key]:e.target.value}))}/>
                   )}
+                  {field.key==='amount' && amountIsZero && (
+                    <p className="text-xs text-amber-600 mt-1">Amount is ₹0 — you'll be asked if you meant to delete this invoice instead.</p>
+                  )}
                 </div>
               ))}
             </div>
@@ -3239,7 +3252,7 @@ function BillingEditModal({ payment, subjects, student, profile, supabase, onClo
               <button className="btn" onClick={onClose}>Cancel</button>
               <button
                 className="btn-primary"
-                onClick={() => hasChanges ? setStep('confirm') : onClose()}
+                onClick={goToConfirm}
                 disabled={!hasChanges}
               >
                 Review Changes →
@@ -3348,9 +3361,13 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
 
   useEffect(() => { loadDeleteRequests() }, [student.id])
   async function loadDeleteRequests() {
-    const r = await fetch(`/api/invoice-delete-requests?student_id=${student.id}`)
-    const d = await r.json()
-    setDeleteRequests(d.requests || [])
+    try {
+      const r = await fetch(`/api/invoice-delete-requests?student_id=${student.id}`)
+      const d = await r.json()
+      setDeleteRequests(d.requests || [])
+    } catch (e) {
+      console.error('Failed to load delete requests', e)
+    }
   }
   const pendingDeleteFor = (paymentId: string) => deleteRequests.find((r:any) => r.payment_id === paymentId && r.status === 'pending')
   const pendingDeleteReqs = deleteRequests.filter((r:any) => r.status === 'pending')
@@ -3380,27 +3397,39 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
   async function submitDeleteRequest() {
     if (!deleteTarget) return
     setDeleteBusy(true)
-    const r = await fetch('/api/invoice-delete-requests', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ payment_id: deleteTarget.id, reason: deleteReason }),
-    })
-    const d = await r.json()
-    setDeleteBusy(false)
-    if (r.ok) { setDeleteTarget(null); setDeleteReason(''); loadDeleteRequests() }
-    else alert(d.error || 'Error submitting request')
+    try {
+      const r = await fetch('/api/invoice-delete-requests', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payment_id: deleteTarget.id, reason: deleteReason }),
+      })
+      let d: any = {}
+      try { d = await r.json() } catch { /* non-JSON response, e.g. route missing */ }
+      if (r.ok) { setDeleteTarget(null); setDeleteReason(''); loadDeleteRequests() }
+      else alert(d.error || `Error submitting request (HTTP ${r.status}). If this persists, the invoice-delete-requests API/table may not be deployed yet — check with your admin.`)
+    } catch (e: any) {
+      alert('Network error submitting request: ' + (e?.message || e))
+    } finally {
+      setDeleteBusy(false)
+    }
   }
 
   async function reviewDeleteRequest(action: 'approve'|'reject') {
     if (!reviewingReq) return
     setReviewBusy(true)
-    const r = await fetch('/api/invoice-delete-requests', {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ request_id: reviewingReq.id, action, review_note: reviewNote }),
-    })
-    const d = await r.json()
-    setReviewBusy(false)
-    if (r.ok) { setReviewingReq(null); setReviewNote(''); loadDeleteRequests(); reload() }
-    else alert(d.error || 'Error reviewing request')
+    try {
+      const r = await fetch('/api/invoice-delete-requests', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ request_id: reviewingReq.id, action, review_note: reviewNote }),
+      })
+      let d: any = {}
+      try { d = await r.json() } catch { /* non-JSON response */ }
+      if (r.ok) { setReviewingReq(null); setReviewNote(''); loadDeleteRequests(); reload() }
+      else alert(d.error || `Error reviewing request (HTTP ${r.status})`)
+    } catch (e: any) {
+      alert('Network error reviewing request: ' + (e?.message || e))
+    } finally {
+      setReviewBusy(false)
+    }
   }
 
   // Quick one-click "Mark as Paid" — sets status to paid + today's date without
@@ -3849,6 +3878,7 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
           supabase={supabase}
           onClose={()=>setEditPayment(null)}
           onSaved={()=>{setEditPayment(null);reload()}}
+          onDeleteInstead={(p:any)=>{ isSuperadmin ? deleteDirectly(p) : setDeleteTarget(p) }}
         />
       )}
 
