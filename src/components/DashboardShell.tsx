@@ -6428,10 +6428,22 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
                             const blockedSlotsForDay = (blockedSlots||[]).filter((b:any)=>b.day_of_week===day).map((b:any)=>b.start_time?.slice(0,5))
                             const allSlots = hourSlotsForDay(day)
                             const freeSlots = allSlots.filter(t => !bookedSlots.includes(t) && !blockedSlotsForDay.includes(t))
-                            if (!freeSlots.length && !bookedSlots.length) return null
+                            const dayLabel = day === 'Sun' ? 'Sunday' : day === 'Tue' ? 'Tuesday' : day === 'Wed' ? 'Wednesday' : day === 'Thu' ? 'Thursday' : day === 'Fri' ? 'Friday' : 'Saturday'
+                            // Always render the day — a silent `return null` here is exactly what made
+                            // previous "no slots visible" bugs impossible to diagnose. Show WHY instead.
+                            if (!allSlots.length) {
+                              return <div key={day} className="text-xs text-gray-300">{dayLabel}: no center hours configured for this day</div>
+                            }
+                            if (!freeSlots.length) {
+                              return (
+                                <div key={day} className="text-xs text-gray-400">
+                                  {dayLabel}: fully {blockedSlotsForDay.length >= allSlots.length ? 'blocked' : 'booked'} ({allSlots.length} slot{allSlots.length!==1?'s':''}, none free)
+                                </div>
+                              )
+                            }
                             return (
                               <div key={day}>
-                                <div className="text-xs font-medium text-gray-500 mb-1.5">{day === 'Sun' ? 'Sunday' : day === 'Tue' ? 'Tuesday' : day === 'Wed' ? 'Wednesday' : day === 'Thu' ? 'Thursday' : day === 'Fri' ? 'Friday' : 'Saturday'}</div>
+                                <div className="text-xs font-medium text-gray-500 mb-1.5">{dayLabel}</div>
                                 <div className="flex flex-wrap gap-1.5">
                                   {freeSlots.map(t => {
                                     const selected = slot?.day === day && slot?.time === t
