@@ -1814,7 +1814,9 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
     if(!form.subject_id)return;setBusy(true)
     const{data:cls}=await supabase.from('class_schedules').insert({subject_id:form.subject_id,day_of_week:form.day_of_week,start_time:form.start_time,duration_minutes:form.duration_minutes}).select().single()
     if(cls&&form.student_ids.length)await supabase.from('schedule_students').insert(form.student_ids.map(sid=>({schedule_id:cls.id,student_id:sid})))
-    setBusy(false);setOpen(false);reload()
+    setBusy(false);setOpen(false)
+    setForm({subject_id:'',day_of_week:'Sun',start_time:'10:00',duration_minutes:60,student_ids:[],studentSearch:''})
+    reload()
   }
   async function del(id:string){if(!confirm('Remove class?'))return;await supabase.from('class_schedules').delete().eq('id',id);reload()}
   async function sendReminders(){
@@ -1838,7 +1840,7 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
             <span className="text-xs text-gray-400">Mon = Holiday · Sun = Working Day</span>
           </div>
         </div>
-        {!isTeacher&&<button onClick={()=>setOpen(true)} className="btn-primary"><Plus className="w-4 h-4"/> Add Class</button>}
+        {!isTeacher&&<button onClick={()=>{setForm({subject_id:'',day_of_week:'Sun',start_time:'10:00',duration_minutes:60,student_ids:[],studentSearch:''});setOpen(true)}} className="btn-primary"><Plus className="w-4 h-4"/> Add Class</button>}
       </div>
 
       {/* Pending reschedule requests banner */}
@@ -2099,6 +2101,7 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
                 .filter((s:any)=>!form.studentSearch||(s.full_name||'').toLowerCase().includes((form.studentSearch||'').toLowerCase()))
                 .map((s:any)=>{
                   const st=studentStatusStyle(s.status||'Active')
+                  const enrolledInSubject = !form.subject_id || (s.student_subjects||[]).some((ss:any)=>ss.subject_id===form.subject_id)
                   return(
                     <label key={s.id} className="flex items-center gap-2 text-sm cursor-pointer p-1.5 rounded-lg hover:bg-gray-50">
                       <input type="checkbox" checked={form.student_ids.includes(s.id)}
@@ -2109,6 +2112,7 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
                         <div className="flex items-center gap-1 mt-0.5">
                           <div className={clsx('w-1.5 h-1.5 rounded-full flex-shrink-0',st.dot)}/>
                           <span className="text-xs text-gray-400">{s.status||'Active'}</span>
+                          {!enrolledInSubject && <span className="text-xs text-amber-600 font-medium">· not enrolled in this instrument</span>}
                         </div>
                       </div>
                     </label>
@@ -5563,24 +5567,38 @@ function AttendanceTab({ schedules, subjects, students, profiles, profile, atten
       ? classAttendance.find((a: any) => a.student_id === entityId && a.type === 'student')
       : classAttendance.find((a: any) => a.type === 'teacher')
 
+    let error: any = null
     if (existing) {
-      await supabase.from('attendance').update({ status, notes: notes || null, informed_at: status === 'absent' ? new Date().toISOString() : null }).eq('id', existing.id)
+      const r = await supabase.from('attendance').update({ status, notes: notes || null, informed_at: status === 'absent' ? new Date().toISOString() : null }).eq('id', existing.id)
+      error = r.error
     } else {
       if (status === 'absent') payload.informed_at = new Date().toISOString()
-      await supabase.from('attendance').insert(payload)
+      const r = await supabase.from('attendance').insert(payload)
+      error = r.error
     }
     setMarking(false)
+    if (error) {
+      console.error('[attendance] mark failed', error)
+      alert(`Couldn't save attendance: ${error.message}${error.message?.includes('relation')?' — the attendance table may not be migrated yet (run add_attendance.sql).':''}`)
+      return
+    }
     reload()
   }
 
   async function markAllPresent() {
     if (!selectedClass) return
     const classStudents = (selectedClass.schedule_students || []).map((ss: any) => ss.student_id)
+    const errors: string[] = []
     for (const sid of classStudents) {
       const existing = classAttendance.find((a: any) => a.student_id === sid && a.type === 'student')
       if (!existing) {
-        await supabase.from('attendance').insert({ schedule_id: selectedClass.id, class_date: selectedDate, type: 'student', student_id: sid, status: 'present', marked_by: profile.id })
+        const { error } = await supabase.from('attendance').insert({ schedule_id: selectedClass.id, class_date: selectedDate, type: 'student', student_id: sid, status: 'present', marked_by: profile.id })
+        if (error) errors.push(error.message)
       }
+    }
+    if (errors.length) {
+      console.error('[attendance] mark-all-present failures', errors)
+      alert(`Some attendance records couldn't be saved:\n${Array.from(new Set(errors)).join('\n')}`)
     }
     reload()
   }
