@@ -6422,7 +6422,14 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
                           Select a Class Slot for {subj?.name||'instrument'} (1 hour)
                         </div>
                         <div className="space-y-3">
-                          {(centerHours.length ? centerHours.filter((h:any)=>!h.is_closed).map((h:any)=>h.day_of_week) : ['Sun','Tue','Wed','Thu','Fri','Sat']).map((day:string) => {
+                          {['Sun','Tue','Wed','Thu','Fri','Sat'].filter((day:string) => {
+                            // Show every normal operating day by default; only hide a day if
+                            // center_hours has an explicit row marking it closed. Previously this
+                            // only showed days that already had a center_hours row at all, which
+                            // hid any day nobody had gotten around to configuring yet.
+                            const h = centerHours.find((c:any)=>c.day_of_week===day)
+                            return h ? !h.is_closed : true
+                          }).map((day:string) => {
                             // Scoped to THIS instrument only — booking Piano no longer hides Guitar's free slots
                             const bookedSlots = schedules.filter((sc:any) => sc.subject_id===subjectId && sc.day_of_week === day).map((sc:any) => sc.start_time?.slice(0,5))
                             const blockedSlotsForDay = (blockedSlots||[]).filter((b:any)=>b.day_of_week===day).map((b:any)=>b.start_time?.slice(0,5))
