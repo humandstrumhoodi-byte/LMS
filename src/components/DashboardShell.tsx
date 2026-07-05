@@ -822,6 +822,7 @@ function StudentsTab({students,subjects,packages,fees,schedules,profile,reload}:
         packages={packages}
         fees={fees}
         profile={profile}
+        schedules={schedules||[]}
         onClose={()=>setDetailStudent(null)}
         reload={reload}
       />}
@@ -3344,7 +3345,7 @@ function AuditLogPanel({ studentId, supabase }: any) {
   )
 }
 
-function StudentDetailModal({ student, payments, subjects, packages, fees, profile, onClose, reload }: any) {
+function StudentDetailModal({ student, payments, subjects, packages, fees, profile, schedules, onClose, reload }: any) {
   const [activeTab, setActiveTab] = useState<'overview'|'monthly'|'invoices'|'raise_invoice'|'audit_log'>('overview')
   const supabase = sb()
   const isSuperadmin = profile?.role === 'superadmin'
@@ -3465,6 +3466,39 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
   const enrolledSubs = subjects.filter((s:any) =>
     student.student_subjects?.some((ss:any) => ss.subject_id === s.id)
   )
+
+  // ── Instrument management (add/remove instruments for an already-enrolled student) ──
+  const [instrModalOpen, setInstrModalOpen] = useState(false)
+  const [instrSelected, setInstrSelected] = useState<string[]>([])
+  const [instrBusy, setInstrBusy] = useState(false)
+  function openInstrModal() {
+    setInstrSelected(enrolledSubs.map((s:any)=>s.id))
+    setInstrModalOpen(true)
+  }
+  async function saveInstruments() {
+    setInstrBusy(true)
+    const currentIds = enrolledSubs.map((s:any)=>s.id)
+    const toAdd = instrSelected.filter(id => !currentIds.includes(id))
+    const toRemove = currentIds.filter((id:string) => !instrSelected.includes(id))
+
+    if (toAdd.length) {
+      await supabase.from('student_subjects').insert(
+        toAdd.map(subId => ({ student_id: student.id, subject_id: subId }))
+      )
+    }
+    for (const subId of toRemove) {
+      await supabase.from('student_subjects').delete().eq('student_id', student.id).eq('subject_id', subId)
+      // Also drop them from any class rosters under the removed instrument, so they
+      // stop showing up in that instrument's attendance/schedule view.
+      const schedIdsForSubject = (schedules||[]).filter((sc:any)=>sc.subject_id===subId).map((sc:any)=>sc.id)
+      if (schedIdsForSubject.length) {
+        await supabase.from('schedule_students').delete().eq('student_id', student.id).in('schedule_id', schedIdsForSubject)
+      }
+    }
+    setInstrBusy(false)
+    setInstrModalOpen(false)
+    reload()
+  }
 
   // Group payments by month
   const byMonth: Record<string, any[]> = {}
@@ -3603,7 +3637,10 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
 
               {/* Enrolled subjects */}
               <div>
-                <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Enrolled Subjects</div>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Enrolled Subjects</div>
+                  <button onClick={openInstrModal} className="btn btn-sm"><Edit className="w-3 h-3"/> Manage</button>
+                </div>
                 {enrolledSubs.length === 0
                   ? <div className="text-sm text-gray-300">No subjects enrolled</div>
                   : <div className="flex flex-wrap gap-2">
@@ -3931,6 +3968,44 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
               <button className="btn" onClick={()=>reviewDeleteRequest('reject')} disabled={reviewBusy}>Reject</button>
               <button className="btn-primary bg-red-500 hover:bg-red-600 border-red-500" onClick={()=>reviewDeleteRequest('approve')} disabled={reviewBusy}>
                 {reviewBusy?<Loader2 className="w-4 h-4 animate-spin"/>:<Trash2 className="w-4 h-4"/>} Approve & Delete
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* ── Manage instruments (add/remove) for an already-enrolled student ── */}
+      {instrModalOpen && (
+        <Modal open={instrModalOpen} onClose={()=>setInstrModalOpen(false)} title={`Manage Instruments — ${student.full_name}`}>
+          <div className="space-y-4">
+            <div>
+              <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Instruments</div>
+              <div className="grid grid-cols-2 gap-2">
+                {subjects.map((s:any) => (
+                  <button key={s.id} type="button"
+                    onClick={()=>setInstrSelected(sel => sel.includes(s.id) ? sel.filter(x=>x!==s.id) : [...sel, s.id])}
+                    className={clsx('px-3 py-2.5 rounded-xl border text-sm font-medium text-left transition-all flex items-center gap-2',
+                      instrSelected.includes(s.id) ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'
+                    )}>
+                    <span className={clsx('badge text-xs', colorBadge[s.color]||colorBadge.violet)}>{s.code}</span>
+                    {s.name}
+                    {instrSelected.includes(s.id) && <span className="ml-auto text-brand-500">✓</span>}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {enrolledSubs.some((s:any)=>!instrSelected.includes(s.id)) && (
+              <div className="bg-amber-50 border border-amber-100 rounded-xl p-3 text-xs text-amber-700">
+                Unchecking an instrument removes it from this student's enrollment and takes them off that instrument's class roster (so they'll no longer show up for attendance there). Their existing invoices for it are kept — nothing is deleted from billing.
+              </div>
+            )}
+            <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 text-xs text-blue-700">
+              To assign or change the specific class day/time for a newly added instrument, use the <strong>Add Class</strong> button in the Schedule tab.
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button className="btn" onClick={()=>setInstrModalOpen(false)}>Cancel</button>
+              <button className="btn-primary" onClick={saveInstruments} disabled={instrBusy}>
+                {instrBusy?<Loader2 className="w-4 h-4 animate-spin"/>:null}Save Changes
               </button>
             </div>
           </div>
@@ -5890,8 +5965,7 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
     // Instrument
     subject_ids:            (student?.student_subjects||[]).map((x:any)=>x.subject_id) as string[],
     grade_level:            'Beginner–Grade 2',
-    enroll_day:             '',
-    enroll_time:            '',
+    enroll_slots:           {} as Record<string,{day:string,time:string}>, // keyed by subject_id — supports booking a slot per instrument
     // Invoice
     package_id:             '',
     invoice_amount:         '',
@@ -5958,23 +6032,24 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
       )
     }
 
-    // If a slot was selected, create or reuse the class and assign the student to it
-    if (p.enroll_day && p.enroll_time && p.subject_ids.length) {
-      const primarySubjectId = p.subject_ids[0]
+    // Book a class slot for EACH selected instrument that has one chosen (supports multi-instrument enrollment)
+    for (const subjectId of p.subject_ids) {
+      const slot = p.enroll_slots[subjectId]
+      if (!slot?.day || !slot?.time) continue
       // Re-check the slot is still free (race condition safety)
       const { data: conflict } = await supabase
         .from('class_schedules')
         .select('id')
-        .eq('subject_id', primarySubjectId)
-        .eq('day_of_week', p.enroll_day)
-        .eq('start_time', p.enroll_time)
+        .eq('subject_id', subjectId)
+        .eq('day_of_week', slot.day)
+        .eq('start_time', slot.time)
         .maybeSingle()
 
       let scheduleId = conflict?.id
       if (!scheduleId) {
         const { data: newCls } = await supabase
           .from('class_schedules')
-          .insert({ subject_id: primarySubjectId, day_of_week: p.enroll_day, start_time: p.enroll_time, duration_minutes: 60 })
+          .insert({ subject_id: subjectId, day_of_week: slot.day, start_time: slot.time, duration_minutes: 60 })
           .select()
           .single()
         scheduleId = newCls?.id
@@ -6272,49 +6347,60 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
                 </div>
               </div>
 
-              {/* Free slot picker — now bookable, based on center hours */}
+              {/* Free slot picker — one per selected instrument, now correctly scoped per subject */}
               {p.subject_ids.length > 0 && (
-                <div>
-                  <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Select a Class Slot (1 hour)</div>
-                  <div className="space-y-3">
-                    {(centerHours.filter((h:any)=>!h.is_closed).map((h:any)=>h.day_of_week)).map((day:string) => {
-                      const bookedSlots = schedules.filter((sc:any) => p.subject_ids.includes(sc.subject_id) && sc.day_of_week === day).map((sc:any) => sc.start_time?.slice(0,5))
-                      const blockedSlotsForDay = (blockedSlots||[]).filter((b:any)=>b.day_of_week===day).map((b:any)=>b.start_time?.slice(0,5))
-                      const allSlots = hourSlotsForDay(day)
-                      const freeSlots = allSlots.filter(t => !bookedSlots.includes(t) && !blockedSlotsForDay.includes(t))
-                      if (!freeSlots.length && !bookedSlots.length) return null
-                      return (
-                        <div key={day}>
-                          <div className="text-xs font-medium text-gray-500 mb-1.5">{day === 'Sun' ? 'Sunday' : day === 'Tue' ? 'Tuesday' : day === 'Wed' ? 'Wednesday' : day === 'Thu' ? 'Thursday' : day === 'Fri' ? 'Friday' : 'Saturday'}</div>
-                          <div className="flex flex-wrap gap-1.5">
-                            {freeSlots.map(t => {
-                              const selected = p.enroll_day === day && p.enroll_time === t
-                              return (
-                                <button key={t} type="button"
-                                  onClick={() => { sf('enroll_day', day); sf('enroll_time', t) }}
-                                  className={clsx('px-2.5 py-1 rounded-lg text-xs font-mono font-medium border transition-all cursor-pointer',
-                                    selected ? 'bg-brand-500 text-white border-brand-500' : 'bg-emerald-50 text-emerald-700 border-emerald-100 hover:bg-emerald-100'
-                                  )}>
-                                  {t}
-                                </button>
-                              )
-                            })}
-                            {bookedSlots.map((t:string) => (
-                              <span key={t} className="px-2.5 py-1 rounded-lg text-xs font-mono bg-gray-100 text-gray-400 line-through cursor-not-allowed">{t}</span>
-                            ))}
-                          </div>
+                <div className="space-y-5">
+                  {p.subject_ids.map((subjectId:string) => {
+                    const subj = subjects.find((s:any)=>s.id===subjectId)
+                    const slot = p.enroll_slots[subjectId]
+                    return (
+                      <div key={subjectId}>
+                        <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">
+                          Select a Class Slot for {subj?.name||'instrument'} (1 hour)
                         </div>
-                      )
-                    })}
-                  </div>
-                  {p.enroll_day && p.enroll_time ? (
-                    <div className="mt-3 flex items-center justify-between bg-brand-50 border border-brand-100 rounded-xl px-3 py-2.5">
-                      <div className="text-sm text-brand-700">Slot selected: <strong>{p.enroll_day} at {p.enroll_time}</strong></div>
-                      <button type="button" onClick={() => { sf('enroll_day',''); sf('enroll_time','') }} className="text-xs text-brand-400 hover:text-brand-600">Clear</button>
-                    </div>
-                  ) : (
-                    <p className="text-xs text-gray-400 mt-2">Click a green slot to book a class time — this will be created automatically when you finish enrolling. You can also skip and assign a slot later from the Schedule tab.</p>
-                  )}
+                        <div className="space-y-3">
+                          {(centerHours.filter((h:any)=>!h.is_closed).map((h:any)=>h.day_of_week)).map((day:string) => {
+                            // Scoped to THIS instrument only — booking Piano no longer hides Guitar's free slots
+                            const bookedSlots = schedules.filter((sc:any) => sc.subject_id===subjectId && sc.day_of_week === day).map((sc:any) => sc.start_time?.slice(0,5))
+                            const blockedSlotsForDay = (blockedSlots||[]).filter((b:any)=>b.day_of_week===day).map((b:any)=>b.start_time?.slice(0,5))
+                            const allSlots = hourSlotsForDay(day)
+                            const freeSlots = allSlots.filter(t => !bookedSlots.includes(t) && !blockedSlotsForDay.includes(t))
+                            if (!freeSlots.length && !bookedSlots.length) return null
+                            return (
+                              <div key={day}>
+                                <div className="text-xs font-medium text-gray-500 mb-1.5">{day === 'Sun' ? 'Sunday' : day === 'Tue' ? 'Tuesday' : day === 'Wed' ? 'Wednesday' : day === 'Thu' ? 'Thursday' : day === 'Fri' ? 'Friday' : 'Saturday'}</div>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {freeSlots.map(t => {
+                                    const selected = slot?.day === day && slot?.time === t
+                                    return (
+                                      <button key={t} type="button"
+                                        onClick={() => sf('enroll_slots', {...p.enroll_slots, [subjectId]: {day, time: t}})}
+                                        className={clsx('px-2.5 py-1 rounded-lg text-xs font-mono font-medium border transition-all cursor-pointer',
+                                          selected ? 'bg-brand-500 text-white border-brand-500' : 'bg-emerald-50 text-emerald-700 border-emerald-100 hover:bg-emerald-100'
+                                        )}>
+                                        {t}
+                                      </button>
+                                    )
+                                  })}
+                                  {bookedSlots.map((t:string) => (
+                                    <span key={t} className="px-2.5 py-1 rounded-lg text-xs font-mono bg-gray-100 text-gray-400 line-through cursor-not-allowed">{t}</span>
+                                  ))}
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                        {slot?.day && slot?.time ? (
+                          <div className="mt-3 flex items-center justify-between bg-brand-50 border border-brand-100 rounded-xl px-3 py-2.5">
+                            <div className="text-sm text-brand-700">Slot selected: <strong>{slot.day} at {slot.time}</strong></div>
+                            <button type="button" onClick={() => { const s={...p.enroll_slots}; delete s[subjectId]; sf('enroll_slots', s) }} className="text-xs text-brand-400 hover:text-brand-600">Clear</button>
+                          </div>
+                        ) : (
+                          <p className="text-xs text-gray-400 mt-2">Click a green slot to book a class time for {subj?.name} — this will be created automatically when you finish enrolling. You can also skip and assign a slot later from the Schedule tab.</p>
+                        )}
+                      </div>
+                    )
+                  })}
                 </div>
               )}
 
@@ -6369,7 +6455,15 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
                   <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3 text-sm text-emerald-800">
                     <strong>{savedStudent?.full_name}</strong> enrolled · {p.subject_ids.length} instrument(s) · {p.grade_level}
                     {selectedPkg && <span> · {selectedPkg.name}</span>}
-                    {p.enroll_day && p.enroll_time && <div className="mt-1">🗓️ Class booked: <strong>{p.enroll_day} at {p.enroll_time}</strong></div>}
+                    {Object.keys(p.enroll_slots).length > 0 && (
+                      <div className="mt-1 space-y-0.5">
+                        {p.subject_ids.filter((sid:string)=>p.enroll_slots[sid]).map((sid:string) => {
+                          const subj = subjects.find((s:any)=>s.id===sid)
+                          const slot = p.enroll_slots[sid]
+                          return <div key={sid}>🗓️ {subj?.name}: <strong>{slot.day} at {slot.time}</strong></div>
+                        })}
+                      </div>
+                    )}
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
