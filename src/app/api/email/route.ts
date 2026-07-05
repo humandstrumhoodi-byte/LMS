@@ -131,7 +131,21 @@ export async function POST(req: NextRequest) {
 
     const { invoiceNo, subjectName, pkgName, monthLabel, rawAmount, discountAmt, finalAmount,
       issueDate, dueDate, status, notes, upiId, academyName, academyAddress, academyPhone,
-      studentPhone, studentIdExt } = invoiceData
+      studentPhone, studentIdExt, lineItems } = invoiceData
+
+    // Multi-line (combined) invoice support — falls back to the original single-row
+    // rendering when lineItems isn't provided, so existing single-subject callers
+    // (e.g. the Raise Invoice tab) keep working unchanged.
+    const rows: {name:string, amount:number}[] = Array.isArray(lineItems) && lineItems.length
+      ? lineItems
+      : [{ name: `${subjectName}${pkgName ? ` — ${pkgName}` : ''}`, amount: Number(rawAmount) }]
+    const lineItemsHtml = rows.map(li => `
+              <tr style="border-bottom:1px solid #f3f4f6">
+                <td style="padding:12px 0">
+                  <div style="font-weight:600;color:#111827;font-size:14px">${li.name}</div>
+                </td>
+                <td style="padding:12px 0;text-align:right;font-weight:600;font-size:14px">₹${Number(li.amount).toLocaleString('en-IN')}</td>
+              </tr>`).join('')
 
     // QR code URL — encodes UPI deep link so parent can scan and pay directly
     const upiString = `upi://pay?pa=${upiId}&pn=${encodeURIComponent('Hum and Strum')}&am=${Number(finalAmount)}&cu=INR&tn=${encodeURIComponent(invoiceNo)}`
@@ -183,13 +197,11 @@ export async function POST(req: NextRequest) {
               </tr>
             </thead>
             <tbody>
-              <tr style="border-bottom:1px solid #f3f4f6">
-                <td style="padding:12px 0">
-                  <div style="font-weight:600;color:#111827;font-size:14px">${subjectName}${pkgName ? ` — ${pkgName}` : ''}</div>
-                  ${notes ? `<div style="font-size:11px;color:#6b7280;margin-top:3px;font-style:italic">${notes}</div>` : ''}
-                </td>
-                <td style="padding:12px 0;text-align:right;font-weight:600;font-size:14px">₹${Number(rawAmount).toLocaleString('en-IN')}</td>
-              </tr>
+              ${lineItemsHtml}
+              ${notes ? `
+              <tr>
+                <td colspan="2" style="padding:6px 0 0 0;font-size:11px;color:#6b7280;font-style:italic">${notes}</td>
+              </tr>` : ''}
               ${Number(discountAmt) > 0 ? `
               <tr style="border-bottom:1px solid #f3f4f6">
                 <td style="padding:8px 0;color:#2563eb;font-size:13px">Discount</td>
