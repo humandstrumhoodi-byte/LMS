@@ -6422,7 +6422,7 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
                           Select a Class Slot for {subj?.name||'instrument'} (1 hour)
                         </div>
                         <div className="space-y-3">
-                          {(centerHours.filter((h:any)=>!h.is_closed).map((h:any)=>h.day_of_week)).map((day:string) => {
+                          {(centerHours.length ? centerHours.filter((h:any)=>!h.is_closed).map((h:any)=>h.day_of_week) : ['Sun','Tue','Wed','Thu','Fri','Sat']).map((day:string) => {
                             // Scoped to THIS instrument only — booking Piano no longer hides Guitar's free slots
                             const bookedSlots = schedules.filter((sc:any) => sc.subject_id===subjectId && sc.day_of_week === day).map((sc:any) => sc.start_time?.slice(0,5))
                             const blockedSlotsForDay = (blockedSlots||[]).filter((b:any)=>b.day_of_week===day).map((b:any)=>b.start_time?.slice(0,5))
