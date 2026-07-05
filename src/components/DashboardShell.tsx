@@ -301,21 +301,27 @@ function DashboardShellInner({profile}:{profile:Profile}){
         client.from('payments').select('*, students(full_name,email,phone), subjects(name,code,color)').order('created_at',{ascending:false}),
         client.from('leads').select('*').order('created_at',{ascending:false}),
       ])
+      // Supabase-js resolves with {data,error} rather than throwing — log any
+      // query errors explicitly so a broken query never fails silently again.
+      ;[['students',s],['profiles',p],['subjects',sub],['class_schedules',sch],['fee_structures',f],['payments',pay],['leads',l]]
+        .forEach(([name,res]:any) => { if (res.error) console.error(`[LMS load] ${name} query failed:`, res.error) })
       setStudents(s.data||[]);setProfiles(p.data||[]);setSubjects(sub.data||[])
       setSchedules(sch.data||[]);setFees(f.data||[]);setPayments(pay.data||[]);setLeads(l.data||[])
       // Load packages separately — table may not exist if SQL migration hasn't run
-      try{
-        const pkg = await client.from('subject_packages').select('*, subjects(name,code,color)').order('subject_id').order('grade_level').order('classes_pm')
-        setPackages(pkg.data||[])
-      }catch(pkgErr){ console.warn('[subject_packages] Table may not exist yet — run add_packages.sql in Supabase') }
-      try{
-        const st = await client.from('subject_teachers').select('*, profiles(id,full_name,role)').order('subject_id').order('grade_level')
-        setSubjectTeachers(st.data||[])
-      }catch(stErr){ console.warn('[subject_teachers] Table may not exist yet — run add_subject_teachers.sql') }
-      try{
-        const att = await client.from('attendance').select('*, students(full_name), profiles(full_name), class_schedules(day_of_week,start_time,subjects(name))').order('class_date',{ascending:false}).limit(500)
-        setAttendance(att.data||[])
-      }catch(attErr){ console.warn('[attendance] Table may not exist yet') }
+      const pkg = await client.from('subject_packages').select('*, subjects(name,code,color)').order('subject_id').order('grade_level').order('classes_pm')
+      if (pkg.error) console.warn('[subject_packages] query failed (table may not exist yet — run add_packages.sql):', pkg.error)
+      setPackages(pkg.data||[])
+
+      const st = await client.from('subject_teachers').select('*, profiles(id,full_name,role)').order('subject_id').order('grade_level')
+      if (st.error) console.warn('[subject_teachers] query failed (table may not exist yet — run add_subject_teachers.sql):', st.error)
+      setSubjectTeachers(st.data||[])
+
+      // NOTE: 'profiles' embed removed — attendance has TWO FKs to profiles
+      // (teacher_id and marked_by), which made PostgREST reject this query
+      // as ambiguous, silently failing the whole attendance load every time.
+      const att = await client.from('attendance').select('*, students(full_name), class_schedules(day_of_week,start_time,subjects(name))').order('class_date',{ascending:false}).limit(500)
+      if (att.error) console.warn('[attendance] query failed (table may not exist yet — run add_attendance.sql):', att.error)
+      setAttendance(att.data||[])
     }catch(e){console.error('[LMS load error]',e)}
   },[])
 
@@ -5626,35 +5632,22 @@ function AttendanceTab({ schedules, subjects, students, profiles, profile, atten
     if (!selectedClass) return
     setMarking(true)
 
-    const payload: any = {
-      schedule_id: selectedClass.id,
-      class_date: selectedDate,
-      type,
-      status,
-      marked_by: profile.id,
-      notes: notes || null,
-    }
-    if (type === 'student') payload.student_id = entityId
-    else payload.teacher_id = entityId
-
-    // Upsert
-    const existing = type === 'student'
-      ? classAttendance.find((a: any) => a.student_id === entityId && a.type === 'student')
-      : classAttendance.find((a: any) => a.type === 'teacher')
-
-    let error: any = null
-    if (existing) {
-      const r = await supabase.from('attendance').update({ status, notes: notes || null, informed_at: status === 'absent' ? new Date().toISOString() : null }).eq('id', existing.id)
-      error = r.error
-    } else {
-      if (status === 'absent') payload.informed_at = new Date().toISOString()
-      const r = await supabase.from('attendance').insert(payload)
-      error = r.error
-    }
+    // Atomic server-side upsert (see mark_attendance() in Supabase) — avoids the
+    // old bug where a stale local "existing" lookup could silently update zero rows.
+    const { error } = await supabase.rpc('mark_attendance', {
+      p_schedule_id: selectedClass.id,
+      p_class_date: selectedDate,
+      p_type: type,
+      p_student_id: type === 'student' ? entityId : null,
+      p_teacher_id: type === 'teacher' ? entityId : null,
+      p_status: status,
+      p_notes: notes || null,
+      p_marked_by: profile.id,
+    })
     setMarking(false)
     if (error) {
       console.error('[attendance] mark failed', error)
-      alert(`Couldn't save attendance: ${error.message}${error.message?.includes('relation')?' — the attendance table may not be migrated yet (run add_attendance.sql).':''}`)
+      alert(`Couldn't save attendance: ${error.message}${error.message?.includes('function')&&error.message?.includes('does not exist')?' — run the mark_attendance SQL function migration in Supabase.':''}`)
       return
     }
     reload()
@@ -5667,7 +5660,16 @@ function AttendanceTab({ schedules, subjects, students, profiles, profile, atten
     for (const sid of classStudents) {
       const existing = classAttendance.find((a: any) => a.student_id === sid && a.type === 'student')
       if (!existing) {
-        const { error } = await supabase.from('attendance').insert({ schedule_id: selectedClass.id, class_date: selectedDate, type: 'student', student_id: sid, status: 'present', marked_by: profile.id })
+        const { error } = await supabase.rpc('mark_attendance', {
+          p_schedule_id: selectedClass.id,
+          p_class_date: selectedDate,
+          p_type: 'student',
+          p_student_id: sid,
+          p_teacher_id: null,
+          p_status: 'present',
+          p_notes: null,
+          p_marked_by: profile.id,
+        })
         if (error) errors.push(error.message)
       }
     }
@@ -5921,8 +5923,16 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
     sb().from('blocked_slots').select('*').then(({ data }: any) => setBlockedSlots(data || []))
     sb().from('center_hours').select('*').then(({ data }: any) => setCenterHours(data || []))
   }, [])
+  const DEFAULT_HOURS: Record<string,{open_time:string,close_time:string,is_closed:boolean}> = {
+    Sun:{open_time:'10:00',close_time:'20:00',is_closed:false},
+    Tue:{open_time:'15:00',close_time:'20:00',is_closed:false},
+    Wed:{open_time:'15:00',close_time:'20:00',is_closed:false},
+    Thu:{open_time:'15:00',close_time:'20:00',is_closed:false},
+    Fri:{open_time:'15:00',close_time:'20:00',is_closed:false},
+    Sat:{open_time:'10:00',close_time:'20:00',is_closed:false},
+  }
   function hourSlotsForDay(day:string):string[] {
-    const h = centerHours.find((c:any)=>c.day_of_week===day)
+    const h = centerHours.find((c:any)=>c.day_of_week===day) || DEFAULT_HOURS[day]
     if (!h || h.is_closed) return []
     const slots:string[] = []
     const oh = parseInt(h.open_time.split(':')[0])
@@ -5965,10 +5975,23 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
     // Instrument
     subject_ids:            (student?.student_subjects||[]).map((x:any)=>x.subject_id) as string[],
     grade_level:            'Beginner–Grade 2',
-    enroll_slots:           {} as Record<string,{day:string,time:string}>, // keyed by subject_id — supports booking a slot per instrument
-    // Invoice
-    package_id:             '',
-    invoice_amount:         '',
+    // Pre-populate each already-enrolled subject's current class slot (if any), so editing
+    // an existing student shows their current day/time instead of a blank picker.
+    enroll_slots:           (()=>{
+      const initial: Record<string,{day:string,time:string}> = {}
+      if (student?.id) {
+        (student?.student_subjects||[]).forEach((ss:any)=>{
+          const sched = (schedules||[]).find((sc:any) =>
+            sc.subject_id === ss.subject_id && (sc.schedule_students||[]).some((s2:any)=>s2.student_id===student.id)
+          )
+          if (sched) initial[ss.subject_id] = { day: sched.day_of_week, time: sched.start_time?.slice(0,5) }
+        })
+      }
+      return initial
+    })() as Record<string,{day:string,time:string}>,
+    // Invoice — per-instrument so a combined invoice can cover every selected subject
+    package_ids:            {} as Record<string,string>,
+    invoice_amounts:        {} as Record<string,string>,
     invoice_discount:       '',
     invoice_month:          new Date().toLocaleString('en-IN',{month:'long',year:'numeric'}),
     invoice_mode:           'UPI',
@@ -6025,6 +6048,11 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
     if (!savedStudent?.id) return
     setBusy(true)
     const sid = savedStudent.id
+
+    // What instruments did they have before this save (for edit mode cleanup)?
+    const previousSubjectIds: string[] = (student?.student_subjects||[]).map((x:any)=>x.subject_id)
+    const removedSubjectIds = previousSubjectIds.filter(id => !p.subject_ids.includes(id))
+
     await supabase.from('student_subjects').delete().eq('student_id', sid)
     if (p.subject_ids.length) {
       await supabase.from('student_subjects').insert(
@@ -6032,11 +6060,25 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
       )
     }
 
-    // Book a class slot for EACH selected instrument that has one chosen (supports multi-instrument enrollment)
+    // Fully removed instruments — take them off that instrument's class roster entirely
+    if (removedSubjectIds.length) {
+      const removedSchedIds = (schedules||[]).filter((sc:any)=>removedSubjectIds.includes(sc.subject_id)).map((sc:any)=>sc.id)
+      if (removedSchedIds.length) {
+        await supabase.from('schedule_students').delete().eq('student_id', sid).in('schedule_id', removedSchedIds)
+      }
+    }
+
+    // Book/move a class slot for each selected instrument that has one chosen
     for (const subjectId of p.subject_ids) {
       const slot = p.enroll_slots[subjectId]
       if (!slot?.day || !slot?.time) continue
-      // Re-check the slot is still free (race condition safety)
+
+      // If they're currently in a DIFFERENT schedule for this same subject, that's a slot change —
+      // remove the stale membership so they don't end up in two classes for one instrument.
+      const oldSchedIdsForSubject = (schedules||[])
+        .filter((sc:any)=>sc.subject_id===subjectId && (sc.schedule_students||[]).some((ss:any)=>ss.student_id===sid))
+        .map((sc:any)=>sc.id)
+
       const { data: conflict } = await supabase
         .from('class_schedules')
         .select('id')
@@ -6054,6 +6096,11 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
           .single()
         scheduleId = newCls?.id
       }
+
+      const staleSchedIds = oldSchedIdsForSubject.filter((id:string) => id !== scheduleId)
+      if (staleSchedIds.length) {
+        await supabase.from('schedule_students').delete().eq('student_id', sid).in('schedule_id', staleSchedIds)
+      }
       if (scheduleId) {
         await supabase.from('schedule_students').upsert(
           { schedule_id: scheduleId, student_id: sid },
@@ -6070,34 +6117,37 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
     if (!savedStudent?.id) { reload(); onClose(); return }
     setBusy(true)
 
-    const selectedPkg = packages.find((pkg: any) => pkg.id === p.package_id)
-    const selectedSub = subjects.find((s: any) => p.subject_ids.includes(s.id))
-    const rawAmount = parseFloat(p.invoice_amount) || 0
-    const discountAmt = parseFloat(p.invoice_discount) || 0
-    const finalAmount = Math.max(0, rawAmount - discountAmt)
     const invoiceNo = `INV-${Date.now().toString().slice(-6)}`
+    // Discount is applied against the combined total, proportionally split across
+    // line items so each payment row still reflects an accurate discounted amount.
+    const billableLines = lineItems.filter(li => li.amount > 0)
+    const rawTotal = billableLines.reduce((sum,li)=>sum+li.amount, 0)
 
-    if (rawAmount > 0) {
-      await supabase.from('payments').insert({
-        student_id:      savedStudent.id,
-        subject_id:      p.subject_ids[0] || null,
-        amount:          finalAmount,
-        discount:        discountAmt || null,
-        status:          p.invoice_status,
-        payment_date:    p.invoice_status === 'paid' ? new Date().toISOString().slice(0,10) : null,
-        month_label:     p.invoice_month,
-        due_date:        p.invoice_due || null,
-        invoice_number:  invoiceNo.replace('INV-',''),
-        mode_of_payment: p.invoice_mode,
-        description:     selectedPkg?.name || selectedSub?.name || 'Tuition',
-        student_name:    savedStudent.full_name,
-        student_email:   savedStudent.email,
-        student_phone:   savedStudent.phone,
-        recorded_by:     'Academy',
+    if (billableLines.length) {
+      const rows = billableLines.map(li => {
+        const lineDiscount = rawTotal > 0 ? Math.round((li.amount / rawTotal) * discountAmt) : 0
+        return {
+          student_id:      savedStudent.id,
+          subject_id:      li.subjectId,
+          amount:          Math.max(0, li.amount - lineDiscount),
+          discount:        lineDiscount || null,
+          status:          p.invoice_status,
+          payment_date:    p.invoice_status === 'paid' ? new Date().toISOString().slice(0,10) : null,
+          month_label:     p.invoice_month,
+          due_date:        p.invoice_due || null,
+          invoice_number:  invoiceNo.replace('INV-',''), // shared across all lines — this IS what makes it "one combined invoice"
+          mode_of_payment: p.invoice_mode,
+          description:     li.pkg?.name || li.subj?.name || 'Tuition',
+          student_name:    savedStudent.full_name,
+          student_email:   savedStudent.email,
+          student_phone:   savedStudent.phone,
+          recorded_by:     'Academy',
+        }
       })
+      await supabase.from('payments').insert(rows)
     }
 
-    if (sendEmail && savedStudent.email && rawAmount > 0) {
+    if (sendEmail && savedStudent.email && billableLines.length) {
       const issueDate = new Date().toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'})
       const dueDate = new Date(p.invoice_due).toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'})
       const r = await fetch('/api/email', {
@@ -6108,9 +6158,16 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
           studentEmail: savedStudent.email,
           studentName: savedStudent.full_name,
           invoiceData: {
-            invoiceNo, subjectName: selectedSub?.name || 'Tuition',
-            pkgName: selectedPkg?.name || null,
-            monthLabel: p.invoice_month, rawAmount, discountAmt, finalAmount,
+            invoiceNo,
+            // Multi-line payload — the email template sums these for the total
+            // and falls back to the single-item fields below if omitted.
+            lineItems: billableLines.map(li => ({
+              name: (li.pkg?.name ? `${li.subj?.name} — ${li.pkg.name}` : li.subj?.name) || 'Tuition',
+              amount: li.amount,
+            })),
+            subjectName: billableLines.map(li=>li.subj?.name).filter(Boolean).join(' + ') || 'Tuition',
+            pkgName: null,
+            monthLabel: p.invoice_month, rawAmount: rawTotal, discountAmt, finalAmount,
             issueDate, dueDate, status: p.invoice_status,
             notes: p.invoice_notes || null,
             upiId: 'truetoneacademy@sbi',
@@ -6132,14 +6189,20 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
     if (!sendEmail || !savedStudent.email) onClose()
   }
 
-  const subjectPackages = packages.filter((pkg: any) =>
-    p.subject_ids.includes(pkg.subject_id) &&
+  const packagesForSubject = (subjectId:string) => packages.filter((pkg: any) =>
+    pkg.subject_id === subjectId &&
     (pkg.grade_level === p.grade_level || pkg.grade_level === 'All Levels') &&
     pkg.is_active
   )
 
-  const selectedPkg = packages.find((pkg: any) => pkg.id === p.package_id)
-  const rawAmount = parseFloat(p.invoice_amount) || 0
+  // One line item per selected instrument — this is what makes the invoice "combined"
+  const lineItems = p.subject_ids.map((subjectId: string) => {
+    const subj = subjects.find((s:any)=>s.id===subjectId)
+    const pkg = packages.find((pkg:any)=>pkg.id===p.package_ids[subjectId])
+    const amount = parseFloat(p.invoice_amounts[subjectId]) || 0
+    return { subjectId, subj, pkg, amount }
+  })
+  const rawAmount = lineItems.reduce((sum,li)=>sum+li.amount, 0)
   const discountAmt = parseFloat(p.invoice_discount) || 0
   const finalAmount = Math.max(0, rawAmount - discountAmt)
 
@@ -6337,7 +6400,7 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
                 <div className="flex gap-2 flex-wrap">
                   {['Beginner–Grade 2','Grade 3–5','Grade 6–8'].map(g=>(
                     <button key={g} type="button"
-                      onClick={()=>{ sf('grade_level',g); sf('package_id',''); sf('invoice_amount','') }}
+                      onClick={()=>{ sf('grade_level',g); sf('package_ids',{}); sf('invoice_amounts',{}) }}
                       className={clsx('px-3 py-1.5 rounded-lg border text-sm font-medium transition-all',
                         p.grade_level===g ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-gray-200 text-gray-500 hover:border-gray-300'
                       )}>
@@ -6404,34 +6467,49 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
                 </div>
               )}
 
-              {p.subject_ids.length > 0 && subjectPackages.length > 0 && (
-                <div>
-                  <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Select Package</div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {subjectPackages.sort((a:any,b:any)=>(a.months||1)-(b.months||1)||(a.classes_pm-b.classes_pm)).map((pkg:any)=>(
-                      <button key={pkg.id} type="button"
-                        onClick={()=>{ sf('package_id',pkg.id); sf('invoice_amount',String(pkg.price)) }}
-                        className={clsx('p-3 rounded-xl border text-left transition-all',
-                          p.package_id===pkg.id ? 'border-brand-500 bg-brand-50' : 'border-gray-200 bg-white hover:border-gray-300'
-                        )}>
-                        <div className="flex items-center gap-1.5 mb-1.5">
-                          <span className="badge text-xs bg-gray-100 text-gray-600">{pkg.classes_pm} cls/mo</span>
-                          {(pkg.months||1)>1 && <span className={clsx('badge text-xs',(pkg.months||1)===6?'bg-rose-50 text-rose-700':'bg-teal-50 text-teal-700')}>{pkg.months}mo · {(pkg.months||1)===6?'15%':'10%'} off</span>}
+              {p.subject_ids.length > 0 && (
+                <div className="space-y-5">
+                  {p.subject_ids.map((subjectId:string) => {
+                    const subj = subjects.find((s:any)=>s.id===subjectId)
+                    const pkgsForThis = packagesForSubject(subjectId)
+                    if (!pkgsForThis.length) return null
+                    return (
+                      <div key={subjectId}>
+                        <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Select Package — {subj?.name}</div>
+                        <div className="grid grid-cols-2 gap-2">
+                          {pkgsForThis.sort((a:any,b:any)=>(a.months||1)-(b.months||1)||(a.classes_pm-b.classes_pm)).map((pkg:any)=>(
+                            <button key={pkg.id} type="button"
+                              onClick={()=>{
+                                sf('package_ids', {...p.package_ids, [subjectId]: pkg.id})
+                                sf('invoice_amounts', {...p.invoice_amounts, [subjectId]: String(pkg.price)})
+                              }}
+                              className={clsx('p-3 rounded-xl border text-left transition-all',
+                                p.package_ids[subjectId]===pkg.id ? 'border-brand-500 bg-brand-50' : 'border-gray-200 bg-white hover:border-gray-300'
+                              )}>
+                              <div className="flex items-center gap-1.5 mb-1.5">
+                                <span className="badge text-xs bg-gray-100 text-gray-600">{pkg.classes_pm} cls/mo</span>
+                                {(pkg.months||1)>1 && <span className={clsx('badge text-xs',(pkg.months||1)===6?'bg-rose-50 text-rose-700':'bg-teal-50 text-teal-700')}>{pkg.months}mo · {(pkg.months||1)===6?'15%':'10%'} off</span>}
+                              </div>
+                              <div className="text-base font-bold text-gray-900">{pkg.months>1?`₹${pkg.price.toLocaleString('en-IN')} total`:`₹${pkg.price.toLocaleString('en-IN')}/mo`}</div>
+                              {pkg.months>1 && <div className="text-xs text-emerald-600">= ₹{Math.round(pkg.price/pkg.months).toLocaleString('en-IN')}/mo</div>}
+                              <div className="text-xs text-gray-400 mt-0.5">{pkg.duration_min} min · ₹{Math.round(pkg.price/(pkg.classes_pm*(pkg.months||1))).toLocaleString('en-IN')}/class</div>
+                            </button>
+                          ))}
+                          <button type="button"
+                            onClick={()=>{
+                              const pk={...p.package_ids}; delete pk[subjectId]; sf('package_ids', pk)
+                              sf('invoice_amounts', {...p.invoice_amounts, [subjectId]: ''})
+                            }}
+                            className={clsx('p-3 rounded-xl border text-left transition-all',
+                              !p.package_ids[subjectId] ? 'border-brand-500 bg-brand-50' : 'border-gray-200 bg-white hover:border-gray-300'
+                            )}>
+                            <div className="text-sm font-semibold text-gray-700">Custom amount</div>
+                            <div className="text-xs text-gray-400">Enter manually in invoice step</div>
+                          </button>
                         </div>
-                        <div className="text-base font-bold text-gray-900">{pkg.months>1?`₹${pkg.price.toLocaleString('en-IN')} total`:`₹${pkg.price.toLocaleString('en-IN')}/mo`}</div>
-                        {pkg.months>1 && <div className="text-xs text-emerald-600">= ₹{Math.round(pkg.price/pkg.months).toLocaleString('en-IN')}/mo</div>}
-                        <div className="text-xs text-gray-400 mt-0.5">{pkg.duration_min} min · ₹{Math.round(pkg.price/(pkg.classes_pm*(pkg.months||1))).toLocaleString('en-IN')}/class</div>
-                      </button>
-                    ))}
-                    <button type="button"
-                      onClick={()=>{ sf('package_id',''); sf('invoice_amount','') }}
-                      className={clsx('p-3 rounded-xl border text-left transition-all',
-                        !p.package_id ? 'border-brand-500 bg-brand-50' : 'border-gray-200 bg-white hover:border-gray-300'
-                      )}>
-                      <div className="text-sm font-semibold text-gray-700">Custom amount</div>
-                      <div className="text-xs text-gray-400">Enter manually in invoice step</div>
-                    </button>
-                  </div>
+                      </div>
+                    )
+                  })}
                 </div>
               )}
             </div>
@@ -6454,7 +6532,6 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
                 <>
                   <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3 text-sm text-emerald-800">
                     <strong>{savedStudent?.full_name}</strong> enrolled · {p.subject_ids.length} instrument(s) · {p.grade_level}
-                    {selectedPkg && <span> · {selectedPkg.name}</span>}
                     {Object.keys(p.enroll_slots).length > 0 && (
                       <div className="mt-1 space-y-0.5">
                         {p.subject_ids.filter((sid:string)=>p.enroll_slots[sid]).map((sid:string) => {
@@ -6466,24 +6543,41 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
                     )}
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="label">Amount (₹)</label>
-                      <input className="input text-lg font-semibold" type="number" value={p.invoice_amount}
-                        onChange={e=>sf('invoice_amount',e.target.value)} placeholder="e.g. 2200"/>
+                  <div>
+                    <div className="label mb-2">Amount per instrument (₹)</div>
+                    <div className="space-y-2">
+                      {lineItems.map((li:any) => (
+                        <div key={li.subjectId} className="flex items-center gap-3 bg-gray-50 rounded-xl px-3 py-2">
+                          <div className="flex-1 text-sm font-medium text-gray-700">
+                            {li.subj?.name}
+                            {li.pkg && <span className="text-xs text-gray-400 ml-1.5">({li.pkg.name})</span>}
+                          </div>
+                          <input
+                            className="input w-32 text-right font-semibold"
+                            type="number"
+                            value={p.invoice_amounts[li.subjectId] ?? ''}
+                            onChange={e=>sf('invoice_amounts', {...p.invoice_amounts, [li.subjectId]: e.target.value})}
+                            placeholder="e.g. 2200"
+                          />
+                        </div>
+                      ))}
                     </div>
-                    <div>
-                      <label className="label">Discount (₹)</label>
-                      <input className="input" type="number" value={p.invoice_discount}
-                        onChange={e=>sf('invoice_discount',e.target.value)} placeholder="0"/>
-                    </div>
+                  </div>
+
+                  <div>
+                    <label className="label">Combined Discount (₹)</label>
+                    <input className="input" type="number" value={p.invoice_discount}
+                      onChange={e=>sf('invoice_discount',e.target.value)} placeholder="0"/>
+                    {lineItems.length > 1 && discountAmt > 0 && (
+                      <p className="text-xs text-gray-400 mt-1">Split proportionally across each instrument's invoice line.</p>
+                    )}
                   </div>
 
                   {rawAmount > 0 && (
                     <div className={clsx('flex justify-between items-center px-4 py-2.5 rounded-xl text-sm',
                       discountAmt>0?'bg-blue-50 border border-blue-100':'bg-emerald-50 border border-emerald-100'
                     )}>
-                      <span className="text-gray-600">{discountAmt>0?<><span className="text-blue-600">{rawAmount.toLocaleString('en-IN')} - {discountAmt.toLocaleString('en-IN')} = </span></>:null}Final amount:</span>
+                      <span className="text-gray-600">{discountAmt>0?<><span className="text-blue-600">{rawAmount.toLocaleString('en-IN')} - {discountAmt.toLocaleString('en-IN')} = </span></>:null}Combined total:</span>
                       <span className="font-bold text-lg text-emerald-700">₹{finalAmount.toLocaleString('en-IN')}</span>
                     </div>
                   )}
