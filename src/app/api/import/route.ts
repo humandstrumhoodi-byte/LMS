@@ -205,28 +205,58 @@ export async function POST(req: NextRequest) {
   const { data: allStudents } = await svc.from('students')
     .select('id, student_id_ext, email, phone, full_name')
 
+  // NOTE: phone/email are NOT guaranteed unique per student — siblings commonly
+  // share a guardian's phone/email. So these maps hold ARRAYS of candidates,
+  // and we disambiguate by name below rather than silently keeping only the
+  // last student seen for that phone/email (that was the old bug — it caused
+  // one sibling's invoices to get attributed to the other).
   const studentByExtId: Record<string, string> = {}
-  const studentByEmail: Record<string, string> = {}
-  const studentByPhone: Record<string, string> = {}
+  const studentByEmail: Record<string, { id: string; full_name: string }[]> = {}
+  const studentByPhone: Record<string, { id: string; full_name: string }[]> = {}
 
   ;(allStudents || []).forEach(st => {
     if (st.student_id_ext) studentByExtId[String(st.student_id_ext).trim()] = st.id
-    if (st.email) studentByEmail[st.email.toLowerCase().trim()] = st.id
-    if (st.phone) studentByPhone[st.phone.replace(/\s/g, '').replace(/^\+91/, '91')] = st.id
+    if (st.email) {
+      const key = st.email.toLowerCase().trim()
+      ;(studentByEmail[key] ||= []).push({ id: st.id, full_name: st.full_name })
+    }
+    if (st.phone) {
+      const key = st.phone.replace(/\s/g, '').replace(/^\+91/, '91')
+      ;(studentByPhone[key] ||= []).push({ id: st.id, full_name: st.full_name })
+    }
   })
 
-  function findStudent(extId?: string | null, email?: string | null, phone?: string | null): string | null {
+  // Loose first-name comparison — good enough to tell siblings apart
+  // without breaking on minor spelling/spacing differences.
+  function firstNameOf(n: string | null | undefined): string {
+    return (n || '').trim().split(/\s+/)[0]?.toLowerCase() || ''
+  }
+
+  // Given a list of same-phone/email candidates, pick the one whose first
+  // name matches the CSV row's name. Returns null (unmatched — safer than
+  // guessing) if there's more than one candidate and none match by name.
+  function disambiguate(candidates: { id: string; full_name: string }[], rowName?: string | null): string | null {
+    if (candidates.length === 1) return candidates[0].id
+    if (candidates.length === 0) return null
+    const wantFirst = firstNameOf(rowName)
+    if (!wantFirst) return null // multiple siblings, no name to disambiguate with — don't guess
+    const match = candidates.find(c => firstNameOf(c.full_name) === wantFirst)
+    return match ? match.id : null
+  }
+
+  function findStudent(extId?: string | null, email?: string | null, phone?: string | null, name?: string | null): string | null {
     if (extId) {
       const found = studentByExtId[String(extId).trim()]
       if (found) return found
     }
     if (email) {
-      const found = studentByEmail[email.toLowerCase().trim()]
+      const found = disambiguate(studentByEmail[email.toLowerCase().trim()] || [], name)
       if (found) return found
     }
     if (phone) {
       const norm = phone.replace(/\s/g, '').replace(/^\+91/, '91').replace(/^0/, '')
-      const found = studentByPhone[norm] || studentByPhone['91' + norm] || studentByPhone['+91' + norm]
+      const candidates = studentByPhone[norm] || studentByPhone['91' + norm] || studentByPhone['+91' + norm] || []
+      const found = disambiguate(candidates, name)
       if (found) return found
     }
     return null
@@ -266,7 +296,7 @@ export async function POST(req: NextRequest) {
       // Skip zero-amount rows (free makeup classes etc.)
       if (!mapped.amount || mapped.amount <= 0) { skip++; continue }
 
-      const studentId = findStudent(mapped.student_id_ext, mapped.student_email, mapped.student_phone)
+      const studentId = findStudent(mapped.student_id_ext, mapped.student_email, mapped.student_phone, mapped.student_name)
       if (!studentId && mapped.student_name && mapped.student_name !== 'Student Sample') {
         studentsMissing.push(mapped.student_name)
       }
@@ -359,7 +389,7 @@ export async function POST(req: NextRequest) {
     const mapped = mapPaymentRow(row)
     if (!mapped.amount || mapped.amount <= 0) { skip++; continue }
 
-    const studentId = findStudent(mapped.student_id_ext, mapped.student_email, mapped.student_phone)
+    const studentId = findStudent(mapped.student_id_ext, mapped.student_email, mapped.student_phone, mapped.student_name)
 
     toInsert.push({
       amount:          mapped.amount,
