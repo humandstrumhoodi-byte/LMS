@@ -1459,8 +1459,20 @@ function renderWeekView(p:any){
   const {visible,WORKING_DAYS,SLOT_TIMES,isBlocked,toggleBlock,openAddAt,isTeacher,
          setReminderCls,setReminderOpen,setSentResult,subById,profiles,centerHours} = p
   const todayAbbr = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date().getDay()]
+  // Same fallback hours used elsewhere in this tab — without this, isWithinHours
+  // silently treats every slot as "closed" whenever centerHours hasn't loaded yet
+  // or a day's row is missing from the table, which is what caused the whole grid
+  // to render as closed/striped.
+  const DEFAULT_HOURS: Record<string,{open_time:string,close_time:string,is_closed:boolean}> = {
+    Sun:{open_time:'10:00',close_time:'20:00',is_closed:false},
+    Tue:{open_time:'15:00',close_time:'20:00',is_closed:false},
+    Wed:{open_time:'15:00',close_time:'20:00',is_closed:false},
+    Thu:{open_time:'15:00',close_time:'20:00',is_closed:false},
+    Fri:{open_time:'15:00',close_time:'20:00',is_closed:false},
+    Sat:{open_time:'10:00',close_time:'20:00',is_closed:false},
+  }
   function isWithinHours(day:string,time:string){
-    const h=(centerHours||[]).find((c:any)=>c.day_of_week===day)
+    const h=(centerHours||[]).find((c:any)=>c.day_of_week===day) || DEFAULT_HOURS[day]
     if(!h||h.is_closed) return false
     return time>=h.open_time?.slice(0,5) && time<h.close_time?.slice(0,5)
   }
