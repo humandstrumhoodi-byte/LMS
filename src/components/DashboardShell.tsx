@@ -2564,6 +2564,34 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
         total_invoice_amount: +form.amount,
       }))
       await supabase.from('payments').insert(rows)
+      // Auto-send a receipt for each installment marked "paid" right now,
+      // including the remaining balance from the other installments in this group.
+      const student = students.find((s:any)=>s.id===form.student_id)
+      if(student?.email){
+        const subjectName = subjects.find((s:any)=>s.id===form.subject_id)?.name || form.description || 'Tuition'
+        const pendingRows = rows.filter((r:any)=>r.status!=='paid')
+        const remainingDue = pendingRows.reduce((sum:number,r:any)=>sum+r.amount,0)
+        const nextDueDate = pendingRows.map((r:any)=>r.due_date).filter(Boolean).sort()[0]||null
+        for(const r of rows.filter((r:any)=>r.status==='paid')){
+          fetch('/api/email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+            type:'paid_confirmation',
+            studentEmail:student.email,
+            studentName:student.full_name,
+            invoiceData:{
+              invoiceNo:form.invoice_number||'',
+              subjectName,
+              monthLabel:form.month_label||'',
+              amount:r.amount,
+              discount:0,
+              paymentDate:r.payment_date,
+              mode:r.mode_of_payment,
+              remainingDue,
+              remainingDueDate:nextDueDate,
+              totalInvoiceAmount:+form.amount,
+            }
+          })}).catch(()=>{})
+        }
+      }
       setBusy(false);setOpen(false);reload()
       return
     }

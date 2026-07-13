@@ -370,7 +370,7 @@ export async function POST(req: NextRequest) {
     const { studentEmail, studentName, invoiceData } = body
     if (!studentEmail) return NextResponse.json({ error: 'No email for this student' }, { status: 400 })
 
-    const { invoiceNo, subjectName, monthLabel, amount, discount, paymentDate, mode } = invoiceData
+    const { invoiceNo, subjectName, monthLabel, amount, discount, paymentDate, mode, remainingDue, remainingDueDate, totalInvoiceAmount } = invoiceData
     const logoUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://your-app.vercel.app'}/logo.png`
     const phoneNumber = '+91 82960 12123'
 
@@ -400,6 +400,15 @@ export async function POST(req: NextRequest) {
             <span style="color:rgba(255,255,255,0.85);font-size:13px;font-weight:500">Amount Paid</span>
             <span style="color:white;font-size:22px;font-weight:700">₹${Number(amount).toLocaleString('en-IN')}</span>
           </div>
+
+          ${Number(remainingDue) > 0 ? `
+          <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:14px 18px;margin-bottom:16px">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span style="color:#92400e;font-size:13px;font-weight:500">Remaining Balance${totalInvoiceAmount ? ` (of ₹${Number(totalInvoiceAmount).toLocaleString('en-IN')} total)` : ''}</span>
+              <span style="color:#b45309;font-size:18px;font-weight:700">₹${Number(remainingDue).toLocaleString('en-IN')}</span>
+            </div>
+            ${remainingDueDate ? `<div style="color:#92400e;font-size:12px;margin-top:6px">Due by <strong>${remainingDueDate}</strong>. A late fee applies if unpaid after this date.</div>` : ''}
+          </div>` : ''}
 
           <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px 16px;text-align:center;margin-bottom:16px">
             <div style="font-size:20px;margin-bottom:4px">🎵</div>
