@@ -1508,22 +1508,23 @@ function renderWeekView(p:any){
                     const open=isWithinHours(day,time)
                     if(!open&&!cls.length){
                       return <td key={day}
-                        className="px-1 py-0.5 align-top cursor-not-allowed"
+                        className="px-1 py-0.5 align-top cursor-pointer"
                         style={{minHeight:28,background:'repeating-linear-gradient(45deg,#f3f4f6,#f3f4f6 6px,#e5e7eb 6px,#e5e7eb 12px)'}}
                         title="Center is closed at this time"
+                        onClick={()=>alert(`Center is closed at ${time} on ${day}.\n\nIf this needs to change, ask your superadmin to update it in the Center Hours tab.`)}
                       />
                     }
                     return (
                       <td key={day}
                         className={clsx('px-1 py-0.5 align-top transition-colors group relative',
-                          blocked?'bg-red-50':(!cls.length&&!isTeacher)?'hover:bg-gray-200 cursor-pointer':'')}
+                          blocked?'bg-red-50':(!isTeacher&&open)?'hover:bg-gray-200 cursor-pointer':'')}
                         style={{minHeight:28}}
                         onClick={()=>{
-                          if(cls.length||isTeacher||!open) return
+                          if(isTeacher||!open) return
                           if(blocked){ toggleBlock(day,time); return } // clicking a blocked slot unblocks it
-                          openAddAt(day,time) // clicking an open, empty slot opens Add Class pre-filled
+                          openAddAt(day,time) // opens Add Class pre-filled — works even if the slot already has a class, so simultaneous classes with different teachers/instruments can be added
                         }}
-                        title={(!cls.length&&!isTeacher&&open)?(blocked?'Click to unblock':'Click to add a class at this time'):''}
+                        title={(!isTeacher&&open)?(blocked?'Click to unblock':cls.length?'Click to add another class at this time':'Click to add a class at this time'):''}
                       >
                         {blocked&&!cls.length&&(
                           <div className="rounded-lg px-2 py-1.5 mb-0.5 text-xs bg-red-100 text-red-400 border border-red-200 flex items-center gap-1">
@@ -1560,6 +1561,9 @@ function renderWeekView(p:any){
                             </div>
                           )
                         })}
+                        {!blocked&&cls.length>0&&!isTeacher&&open&&(
+                          <div className="rounded px-1 py-1 text-xs text-brand-500 font-medium opacity-0 group-hover:opacity-100 transition-opacity text-center border border-dashed border-brand-200 mt-0.5">+ add another class</div>
+                        )}
                       </td>
                     )
                   })}
