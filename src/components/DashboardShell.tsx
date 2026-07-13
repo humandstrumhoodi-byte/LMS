@@ -1495,12 +1495,16 @@ function renderWeekView(p:any){
                     const blocked=isBlocked(day,time)
                     const open=isWithinHours(day,time)
                     if(!open&&!cls.length){
-                      return <td key={day} className="px-1 py-0.5 align-top bg-gray-50/60" style={{minHeight:28}}/>
+                      return <td key={day}
+                        className="px-1 py-0.5 align-top cursor-not-allowed"
+                        style={{minHeight:28,background:'repeating-linear-gradient(45deg,#f3f4f6,#f3f4f6 6px,#e5e7eb 6px,#e5e7eb 12px)'}}
+                        title="Center is closed at this time"
+                      />
                     }
                     return (
                       <td key={day}
                         className={clsx('px-1 py-0.5 align-top transition-colors group relative',
-                          blocked?'bg-red-50':(!cls.length&&!isTeacher)?'hover:bg-brand-50/60 cursor-pointer':'')}
+                          blocked?'bg-red-50':(!cls.length&&!isTeacher)?'hover:bg-gray-200 cursor-pointer':'')}
                         style={{minHeight:28}}
                         onClick={()=>{
                           if(cls.length||isTeacher||!open) return
@@ -1522,7 +1526,7 @@ function renderWeekView(p:any){
                         )}
                         {!blocked&&!cls.length&&!isTeacher&&(
                           <>
-                            <div className="rounded px-1 py-1 text-xs text-brand-300 opacity-0 group-hover:opacity-100 transition-opacity text-center">+ add class</div>
+                            <div className="rounded px-1 py-1 text-xs text-gray-500 font-medium opacity-0 group-hover:opacity-100 transition-opacity text-center">+ add class</div>
                             <button
                               onClick={e=>{e.stopPropagation();toggleBlock(day,time)}}
                               title="Block this slot instead"
