@@ -1756,6 +1756,18 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
     }
     setAddingStudentId(null)
   }
+  const [removingStudentId,setRemovingStudentId]=useState<string|null>(null)
+  async function removeStudentFromClass(studentId:string,studentName:string){
+    if(!reminderCls)return
+    if(!confirm(`Remove ${studentName} from this class?`))return
+    setRemovingStudentId(studentId)
+    const {error}=await supabase.from('schedule_students').delete().eq('schedule_id',reminderCls.id).eq('student_id',studentId)
+    if(!error){
+      setReminderCls((rc:any)=>({...rc,schedule_students:(rc.schedule_students||[]).filter((ss:any)=>ss.student_id!==studentId)}))
+      reload()
+    }
+    setRemovingStudentId(null)
+  }
 
   // Blocked slots
   const [blockedSlots,setBlockedSlots]=useState<any[]>([])
@@ -2023,9 +2035,20 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
               <div>
                 <div className="label mb-2">Recipients</div>
                 <div className="space-y-1 max-h-40 overflow-y-auto">
-                  {schedStudents.map((s:any)=><div key={s.id} className="flex items-center justify-between text-sm px-3 py-1.5 bg-gray-50 rounded-lg">
-                    <span>{s.full_name}</span>
-                    <span className={clsx('text-xs',s.email?'text-gray-400':'text-red-400')}>{s.email||'No email'}</span>
+                  {schedStudents.map((s:any)=><div key={s.id} className="flex items-center justify-between gap-2 text-sm px-3 py-1.5 bg-gray-50 rounded-lg">
+                    <span className="min-w-0 truncate">{s.full_name}</span>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <span className={clsx('text-xs',s.email?'text-gray-400':'text-red-400')}>{s.email||'No email'}</span>
+                      {!isTeacher&&(
+                        <button
+                          title="Remove from this class"
+                          disabled={removingStudentId===s.id}
+                          onClick={()=>removeStudentFromClass(s.id,s.full_name)}
+                          className="text-gray-300 hover:text-red-500 p-0.5">
+                          {removingStudentId===s.id?<Loader2 className="w-3.5 h-3.5 animate-spin"/>:<Trash2 className="w-3.5 h-3.5"/>}
+                        </button>
+                      )}
+                    </div>
                   </div>)}
                   {!schedStudents.length&&<div className="text-sm text-gray-400 px-3">No students assigned</div>}
                 </div>
