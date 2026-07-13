@@ -1,5 +1,5 @@
 'use client'
-import React, { useState, useEffect, useCallback, useRef, Component, ReactNode } from 'react'
+import React, { useState, useEffect, useCallback, useMemo, useRef, Component, ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import { sb } from '@/lib/client'
 import {
@@ -379,7 +379,7 @@ function DashboardShellInner({profile}:{profile:Profile}){
       <main className="flex-1 overflow-y-auto bg-gray-50">
         <div className="max-w-6xl mx-auto px-6 py-6">
           {tab==='home'&&<HomeTab profile={profile} perms={perms} students={students} profiles={profiles} payments={payments} schedules={schedules} subjects={subjects} leads={leads} setTab={setTab}/>}
-          {tab==='students'&&<StudentsTab students={students} subjects={subjects} packages={packages} fees={fees} schedules={schedules} profile={profile} reload={load}/>}
+          {tab==='students'&&<StudentsTab students={students} subjects={subjects} packages={packages} fees={fees} schedules={schedules} payments={payments} profile={profile} reload={load}/>}
           {tab==='leads'&&<LeadsTab leads={leads} subjects={subjects} reload={load}/>}
           {tab==='teachers'&&<TeachersTab profiles={profiles} subjects={subjects} reload={load}/>}
           {tab==='subjects'&&<SubjectsTab subjects={subjects} profiles={profiles} students={students} fees={fees} subjectTeachers={subjectTeachers} reload={load}/>}
@@ -732,7 +732,21 @@ function HomeTab({profile,perms,students,profiles,payments,schedules,subjects,le
 }
 
 // ══════════════════════════════════════════════════════════════ STUDENTS
-function StudentsTab({students,subjects,packages,fees,schedules,profile,reload}:any){
+function StudentsTab({students,subjects,packages,fees,schedules,payments,profile,reload}:any){
+  // Most recent reminder/receipt email sent per student, for the notification badge below.
+  const lastReminderByStudent = useMemo(()=>{
+    const map: Record<string,{date:string,kind:'receipt'|'fine'}> = {}
+    ;(payments||[]).forEach((p:any)=>{
+      if(!p.student_id) return
+      const candidates:[string|null|undefined,'receipt'|'fine'][] = [[p.receipt_sent_at,'receipt'],[p.last_fine_reminder_at,'fine']]
+      candidates.forEach(([ts,kind])=>{
+        if(!ts) return
+        const existing=map[p.student_id]
+        if(!existing||new Date(ts)>new Date(existing.date)) map[p.student_id]={date:ts,kind}
+      })
+    })
+    return map
+  },[payments])
   const supabase=sb()
   const [q,setQ]=useState('')
   const [enrollOpen,setEnrollOpen]=useState(false)
@@ -793,8 +807,18 @@ function StudentsTab({students,subjects,packages,fees,schedules,profile,reload}:
               {filtered.map((s:any,i:number)=>{
                 const subs=subjects.filter((sub:any)=>(s.student_subjects||[]).some((ss:any)=>ss.subject_id===sub.id))
                 const st=studentStatusStyle(s.status||'Active')
+                const lastReminder=lastReminderByStudent[s.id]
                 return(<tr key={s.id} className="hover:bg-gray-50/50">
-                  <td className="td"><div className="flex items-center gap-3"><Avatar name={s.full_name} i={i}/><div><div className="font-medium text-gray-900">{s.full_name}</div><div className="text-xs text-gray-400">{s.email}</div></div></div></td>
+                  <td className="td"><div className="flex items-center gap-3"><Avatar name={s.full_name} i={i}/><div>
+                    <div className="font-medium text-gray-900">{s.full_name}</div>
+                    <div className="text-xs text-gray-400">{s.email}</div>
+                    {lastReminder&&(
+                      <div className="flex items-center gap-1 mt-0.5 text-xs text-brand-500" title={`${lastReminder.kind==='fine'?'Overdue fine reminder':'Payment receipt'} emailed on ${new Date(lastReminder.date).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})}`}>
+                        <Bell className="w-3 h-3"/>
+                        <span>{lastReminder.kind==='fine'?'Fine reminder':'Receipt'} sent {new Date(lastReminder.date).toLocaleDateString('en-IN',{day:'2-digit',month:'short'})}</span>
+                      </div>
+                    )}
+                  </div></div></td>
                   <td className="td text-gray-500">{s.phone||'—'}</td>
                   <td className="td"><div className="flex flex-wrap gap-1">{subs.map((sub:any)=><span key={sub.id} className={clsx('badge',colorBadge[sub.color]||colorBadge.violet)}>{sub.name}</span>)}</div></td>
                   <td className="td"><span className={clsx('badge border',st.color)}><span className={clsx('w-1.5 h-1.5 rounded-full mr-1 inline-block',st.dot)}/>{s.status||'Active'}</span></td>
@@ -2563,7 +2587,7 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
         installment_count: installments.length,
         total_invoice_amount: +form.amount,
       }))
-      await supabase.from('payments').insert(rows)
+      const {data:insertedRows}=await supabase.from('payments').insert(rows).select('id,installment_no,status')
       // Auto-send a receipt for each installment marked "paid" right now,
       // including the remaining balance from the other installments in this group.
       const student = students.find((s:any)=>s.id===form.student_id)
@@ -2573,6 +2597,7 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
         const remainingDue = pendingRows.reduce((sum:number,r:any)=>sum+r.amount,0)
         const nextDueDate = pendingRows.map((r:any)=>r.due_date).filter(Boolean).sort()[0]||null
         for(const r of rows.filter((r:any)=>r.status==='paid')){
+          const insertedRow=(insertedRows||[]).find((ir:any)=>ir.installment_no===r.installment_no)
           fetch('/api/email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
             type:'paid_confirmation',
             studentEmail:student.email,
@@ -2589,7 +2614,9 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
               remainingDueDate:nextDueDate,
               totalInvoiceAmount:+form.amount,
             }
-          })}).catch(()=>{})
+          })}).then(async res=>{
+            if(res.ok&&insertedRow) await supabase.from('payments').update({receipt_sent_at:new Date().toISOString()}).eq('id',insertedRow.id)
+          }).catch(()=>{})
         }
       }
       setBusy(false);setOpen(false);reload()
@@ -3804,7 +3831,7 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
     if (!student.email) return
     setSendingPaid(s => ({ ...s, [p.id]: true }))
     const issueDate = p.payment_date ? new Date(p.payment_date+'T00:00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'}) : new Date().toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'})
-    await fetch('/api/email', {
+    const res = await fetch('/api/email', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         type: 'paid_confirmation',
@@ -3821,6 +3848,7 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
         }
       })
     })
+    if(res.ok) await sb().from('payments').update({receipt_sent_at:new Date().toISOString()}).eq('id',p.id)
     setSendingPaid(s => ({ ...s, [p.id]: false }))
     setPaidSentIds(s => ({ ...s, [p.id]: true }))
   }
