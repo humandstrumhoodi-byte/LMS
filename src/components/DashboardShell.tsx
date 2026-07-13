@@ -1456,7 +1456,7 @@ function SubjectsTab({subjects,profiles,students,fees,subjectTeachers,reload}:an
 // ── Schedule view helpers (top-level to avoid JSX nesting errors) ──
 
 function renderWeekView(p:any){
-  const {visible,WORKING_DAYS,SLOT_TIMES,isBlocked,toggleBlock,isTeacher,
+  const {visible,WORKING_DAYS,SLOT_TIMES,isBlocked,toggleBlock,openAddAt,isTeacher,
          setReminderCls,setReminderOpen,setSentResult,subById,profiles,centerHours} = p
   const todayAbbr = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date().getDay()]
   function isWithinHours(day:string,time:string){
@@ -1499,11 +1499,15 @@ function renderWeekView(p:any){
                     }
                     return (
                       <td key={day}
-                        className={clsx('px-1 py-0.5 align-top transition-colors group',
-                          blocked?'bg-red-50':(!cls.length&&!isTeacher)?'hover:bg-gray-50/80 cursor-pointer':'')}
+                        className={clsx('px-1 py-0.5 align-top transition-colors group relative',
+                          blocked?'bg-red-50':(!cls.length&&!isTeacher)?'hover:bg-brand-50/60 cursor-pointer':'')}
                         style={{minHeight:28}}
-                        onClick={()=>{ if(!cls.length&&!isTeacher&&open) toggleBlock(day,time) }}
-                        title={(!cls.length&&!isTeacher&&open)?(blocked?'Click to unblock':'Click to block slot'):''}
+                        onClick={()=>{
+                          if(cls.length||isTeacher||!open) return
+                          if(blocked){ toggleBlock(day,time); return } // clicking a blocked slot unblocks it
+                          openAddAt(day,time) // clicking an open, empty slot opens Add Class pre-filled
+                        }}
+                        title={(!cls.length&&!isTeacher&&open)?(blocked?'Click to unblock':'Click to add a class at this time'):''}
                       >
                         {blocked&&!cls.length&&(
                           <div className="rounded-lg px-2 py-1.5 mb-0.5 text-xs bg-red-100 text-red-400 border border-red-200 flex items-center gap-1">
@@ -1517,7 +1521,13 @@ function renderWeekView(p:any){
                           </div>
                         )}
                         {!blocked&&!cls.length&&!isTeacher&&(
-                          <div className="rounded px-1 py-1 text-xs text-gray-200 opacity-0 group-hover:opacity-100 transition-opacity text-center">+ block</div>
+                          <>
+                            <div className="rounded px-1 py-1 text-xs text-brand-300 opacity-0 group-hover:opacity-100 transition-opacity text-center">+ add class</div>
+                            <button
+                              onClick={e=>{e.stopPropagation();toggleBlock(day,time)}}
+                              title="Block this slot instead"
+                              className="absolute top-0.5 right-0.5 text-xs text-gray-300 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity px-1">🚫</button>
+                          </>
                         )}
                         {cls.map((c:any)=>{
                           const sub=subById(c.subject_id)
@@ -1826,6 +1836,11 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
     reload()
   }
   async function del(id:string){if(!confirm('Remove class?'))return;await supabase.from('class_schedules').delete().eq('id',id);reload()}
+  // Opens the Add Class modal pre-filled with the day/time of the grid cell that was clicked.
+  function openAddAt(day:string,time:string){
+    setForm({subject_id:'',day_of_week:day,start_time:time,duration_minutes:60,student_ids:[],studentSearch:''})
+    setOpen(true)
+  }
   async function sendReminders(){
     if(!reminderCls)return;setSending(true);setSentResult('')
     const schedStudentIds=(reminderCls.schedule_students||[]).map((ss:any)=>ss.student_id)
@@ -1915,7 +1930,7 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
       </div>
 
       {/* View content */}
-      {viewMode==='week'&&renderWeekView({visible,WORKING_DAYS,SLOT_TIMES,isBlocked,toggleBlock,isTeacher,setReminderCls,setReminderOpen,setSentResult,subById,profiles,blockedSlots,centerHours})}
+      {viewMode==='week'&&renderWeekView({visible,WORKING_DAYS,SLOT_TIMES,isBlocked,toggleBlock,openAddAt,isTeacher,setReminderCls,setReminderOpen,setSentResult,subById,profiles,blockedSlots,centerHours})}
       {viewMode==='day'&&renderDayView({visible,selectedDate,setSelectedDate,WORKING_DAYS,DAY_LABELS,isTeacher,subById,profiles,students,setReminderCls,setReminderOpen,setSentResult,del})}
       {viewMode==='month'&&renderMonthView({visible,selectedDate,setSelectedDate,setViewMode,subById})}
 
