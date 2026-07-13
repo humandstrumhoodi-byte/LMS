@@ -1744,6 +1744,18 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
   const [reminderMsg,setReminderMsg]=useState('')
   const [sending,setSending]=useState(false)
   const [sentResult,setSentResult]=useState('')
+  const [addStudentQuery,setAddStudentQuery]=useState('')
+  const [addingStudentId,setAddingStudentId]=useState<string|null>(null)
+  async function addStudentToClass(studentId:string){
+    if(!reminderCls)return
+    setAddingStudentId(studentId)
+    const {error}=await supabase.from('schedule_students').insert({schedule_id:reminderCls.id,student_id:studentId})
+    if(!error){
+      setReminderCls((rc:any)=>({...rc,schedule_students:[...(rc.schedule_students||[]),{student_id:studentId}]}))
+      reload()
+    }
+    setAddingStudentId(null)
+  }
 
   // Blocked slots
   const [blockedSlots,setBlockedSlots]=useState<any[]>([])
@@ -2018,6 +2030,48 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
                   {!schedStudents.length&&<div className="text-sm text-gray-400 px-3">No students assigned</div>}
                 </div>
               </div>
+              {!isTeacher&&(
+                <div>
+                  <div className="label mb-2">Add Another Student to This Class</div>
+                  <div className="relative mb-2">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400"/>
+                    <input
+                      className="input pl-8 py-1.5 text-sm"
+                      placeholder="Search student by name…"
+                      value={addStudentQuery}
+                      onChange={e=>setAddStudentQuery(e.target.value)}
+                    />
+                  </div>
+                  <div className="max-h-40 overflow-y-auto border border-gray-100 rounded-xl p-1 space-y-0.5">
+                    {students
+                      .filter((s:any)=>s.status!=='Blocked')
+                      .filter((s:any)=>!schedStudents.some((es:any)=>es.id===s.id))
+                      .filter((s:any)=>!addStudentQuery||(s.full_name||'').toLowerCase().includes(addStudentQuery.toLowerCase()))
+                      .slice(0,20)
+                      .map((s:any)=>{
+                        const enrolledInSubject=(s.student_subjects||[]).some((ss:any)=>ss.subject_id===reminderCls.subject_id)
+                        return(
+                          <div key={s.id} className="flex items-center justify-between gap-2 text-sm px-2 py-1.5 rounded-lg hover:bg-gray-50">
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate font-medium">{s.full_name}</div>
+                              {!enrolledInSubject&&<div className="text-xs text-amber-600">not enrolled in {sub?.name}</div>}
+                            </div>
+                            <button
+                              className="btn btn-sm flex-shrink-0"
+                              disabled={addingStudentId===s.id}
+                              onClick={()=>addStudentToClass(s.id)}>
+                              {addingStudentId===s.id?<Loader2 className="w-3.5 h-3.5 animate-spin"/>:<Plus className="w-3.5 h-3.5"/>}
+                              Add
+                            </button>
+                          </div>
+                        )
+                      })}
+                    {students.filter((s:any)=>s.status!=='Blocked').filter((s:any)=>!schedStudents.some((es:any)=>es.id===s.id)).filter((s:any)=>!addStudentQuery||(s.full_name||'').toLowerCase().includes(addStudentQuery.toLowerCase())).length===0&&(
+                      <div className="py-3 text-center text-xs text-gray-400">No matching students</div>
+                    )}
+                  </div>
+                </div>
+              )}
               <div>
                 <label className="label">Custom Note (optional)</label>
                 <textarea className="input" rows={2} placeholder="e.g. Please bring your instrument" value={reminderMsg} onChange={e=>setReminderMsg(e.target.value)}/>
