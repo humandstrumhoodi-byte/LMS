@@ -2461,6 +2461,10 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
   const [tab,setTab]=useState('all');const [open,setOpen]=useState(false);const [importOpen,setImportOpen]=useState(false)
   const [viewMode,setViewMode]=useState<'list'|'pending_by_month'>('list')
   const [invoice,setInvoice]=useState<any>(null);const [reminder,setReminder]=useState<any>(null)
+  const [groupView,setGroupView]=useState<any>(null) // set to a payment row to view its full installment group
+  const [splitEnabled,setSplitEnabled]=useState(false)
+  const emptySplitRow=()=>({amount:'',mode_of_payment:'UPI',status:'paid',date:new Date().toISOString().slice(0,10)})
+  const [installments,setInstallments]=useState<any[]>([emptySplitRow(),{...emptySplitRow(),status:'pending',date:''}])
   const emptyForm = {student_id:'',subject_id:'',month_label:'',amount:'',payment_date:'',due_date:'',mode_of_payment:'UPI',receipt_number:'',invoice_number:'',description:'',notes:'',status:'paid',discount:''}
   const [form,setForm]=useState<any>(emptyForm)
   const [editing,setEditing]=useState<any>(null)
@@ -2503,7 +2507,7 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
     reload()
   }
 
-  function openAdd(){setEditing(null);setForm(emptyForm);setOpen(true)}
+  function openAdd(){setEditing(null);setForm(emptyForm);setSplitEnabled(false);setInstallments([emptySplitRow(),{...emptySplitRow(),status:'pending',date:''}]);setOpen(true)}
   function openEdit(p:any){
     setEditing(p)
     setForm({
@@ -2521,6 +2525,7 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
       status: p.status||'paid',
       discount: String(p.discount||''),
     })
+    setSplitEnabled(false)
     setOpen(true)
   }
 
@@ -2532,8 +2537,37 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
     reload()
   }
 
+  const installmentsTotal = installments.reduce((sum:number,r:any)=>sum+(+r.amount||0),0)
+  const splitMismatch = splitEnabled && form.amount && installmentsTotal !== +form.amount
+
   async function save(){
-    if(!form.amount)return;setBusy(true)
+    if(!form.amount)return
+    if(splitEnabled&&!editing){
+      if(!form.student_id||installmentsTotal!==+form.amount||installments.some((r:any)=>!r.amount||+r.amount<=0))return
+      setBusy(true)
+      const groupId = crypto.randomUUID()
+      const rows = installments.map((r:any,i:number)=>({
+        student_id: form.student_id,
+        subject_id: form.subject_id||null,
+        amount: +r.amount,
+        status: r.status,
+        payment_date: r.status==='paid'?(r.date||new Date().toISOString().slice(0,10)):null,
+        due_date: r.status!=='paid'?(r.date||null):null,
+        month_label: form.month_label||months[0],
+        mode_of_payment: r.mode_of_payment,
+        invoice_number: form.invoice_number||null,
+        description: form.description||null,
+        notes: form.notes||null,
+        invoice_group_id: groupId,
+        installment_no: i+1,
+        installment_count: installments.length,
+        total_invoice_amount: +form.amount,
+      }))
+      await supabase.from('payments').insert(rows)
+      setBusy(false);setOpen(false);reload()
+      return
+    }
+    setBusy(true)
     const payload:any={
       amount:+form.amount,
       payment_date:form.payment_date||new Date().toISOString().slice(0,10),
@@ -2641,7 +2675,14 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
               {filtered.map((p:any)=>(
                 <tr key={p.id} className="hover:bg-gray-50/50">
                   <td className="td"><div className="font-medium text-gray-900">{p.students?.full_name||p.student_name||'—'}</div><div className="text-xs text-gray-400">{p.students?.email||p.student_email}</div></td>
-                  <td className="td font-semibold">{fmt(p.amount)}</td>
+                  <td className="td font-semibold">
+                    {fmt(p.amount)}
+                    {p.invoice_group_id&&(
+                      <button onClick={()=>setGroupView(p)} className="block text-xs font-normal text-brand-500 hover:underline mt-0.5">
+                        Installment {p.installment_no||'?'}/{p.installment_count||'?'} of {fmt(p.total_invoice_amount||0)}
+                      </button>
+                    )}
+                  </td>
                   <td className="td text-gray-400">{p.payment_date||'—'}</td>
                   <td className="td text-gray-500">{p.mode_of_payment||'—'}</td>
                   <td className="td text-gray-400">#{p.receipt_number||'—'}</td>
@@ -2678,18 +2719,77 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
         <div className="grid grid-cols-2 gap-3">
           {!editing&&<div className="col-span-2"><label className="label">Student *</label><select className="input" value={form.student_id} onChange={e=>setForm((f:any)=>({...f,student_id:e.target.value}))}><option value="">— Select student —</option>{students.map((s:any)=><option key={s.id} value={s.id}>{s.full_name}</option>)}</select></div>}
           <div><label className="label">Subject</label><select className="input" value={form.subject_id} onChange={e=>{const fee=fees.find((f:any)=>f.subject_id===e.target.value);setForm((f:any)=>({...f,subject_id:e.target.value,amount:fee?String(fee.amount):f.amount}))}}><option value="">— Select —</option>{subjects.map((s:any)=><option key={s.id} value={s.id}>{s.name}</option>)}</select></div>
-          <div><label className="label">Status</label><select className="input" value={form.status} onChange={e=>setForm((f:any)=>({...f,status:e.target.value}))}>{PAY_STATUSES.map(s=><option key={s} value={s}>{s}</option>)}</select></div>
-          <div><label className="label">Amount (₹) *</label><input className="input" type="number" value={form.amount} onChange={e=>setForm((f:any)=>({...f,amount:e.target.value}))} placeholder="e.g. 2200"/></div>
-          <div><label className="label">Discount (₹)</label><input className="input" type="number" value={form.discount} onChange={e=>setForm((f:any)=>({...f,discount:e.target.value}))} placeholder="0"/></div>
+          {!splitEnabled&&<div><label className="label">Status</label><select className="input" value={form.status} onChange={e=>setForm((f:any)=>({...f,status:e.target.value}))}>{PAY_STATUSES.map(s=><option key={s} value={s}>{s}</option>)}</select></div>}
+          <div><label className="label">{splitEnabled?'Total Bill Amount (₹) *':'Amount (₹) *'}</label><input className="input" type="number" value={form.amount} onChange={e=>setForm((f:any)=>({...f,amount:e.target.value}))} placeholder="e.g. 6000"/></div>
+          {!splitEnabled&&<div><label className="label">Discount (₹)</label><input className="input" type="number" value={form.discount} onChange={e=>setForm((f:any)=>({...f,discount:e.target.value}))} placeholder="0"/></div>}
           <div><label className="label">Month</label><select className="input" value={form.month_label} onChange={e=>setForm((f:any)=>({...f,month_label:e.target.value}))}>{months.map(m=><option key={m}>{m}</option>)}</select></div>
-          <div><label className="label">Payment Date</label><input className="input" type="date" value={form.payment_date} onChange={e=>setForm((f:any)=>({...f,payment_date:e.target.value}))}/></div>
-          <div><label className="label">Due Date</label><input className="input" type="date" value={form.due_date} onChange={e=>setForm((f:any)=>({...f,due_date:e.target.value}))}/></div>
-          <div><label className="label">Mode of Payment</label><select className="input" value={form.mode_of_payment} onChange={e=>setForm((f:any)=>({...f,mode_of_payment:e.target.value}))}>{PAY_MODES.map(m=><option key={m}>{m}</option>)}</select></div>
+          {!splitEnabled&&<div><label className="label">Payment Date</label><input className="input" type="date" value={form.payment_date} onChange={e=>setForm((f:any)=>({...f,payment_date:e.target.value}))}/></div>}
+          {!splitEnabled&&<div><label className="label">Due Date</label><input className="input" type="date" value={form.due_date} onChange={e=>setForm((f:any)=>({...f,due_date:e.target.value}))}/></div>}
+          {!splitEnabled&&<div><label className="label">Mode of Payment</label><select className="input" value={form.mode_of_payment} onChange={e=>setForm((f:any)=>({...f,mode_of_payment:e.target.value}))}>{PAY_MODES.map(m=><option key={m}>{m}</option>)}</select></div>}
           <div><label className="label">Receipt #</label><input className="input" value={form.receipt_number} onChange={e=>setForm((f:any)=>({...f,receipt_number:e.target.value}))}/></div>
           <div><label className="label">Invoice #</label><input className="input" value={form.invoice_number} onChange={e=>setForm((f:any)=>({...f,invoice_number:e.target.value}))}/></div>
           <div className="col-span-2"><label className="label">Description / Notes</label><input className="input" value={form.description} onChange={e=>setForm((f:any)=>({...f,description:e.target.value}))} placeholder="Optional"/></div>
         </div>
-        {form.amount&&form.discount&&+form.discount>0&&(
+
+        {!editing&&(
+          <label className="flex items-center gap-2 mt-3 text-sm cursor-pointer select-none">
+            <input type="checkbox" className="rounded border-gray-300" checked={splitEnabled} onChange={e=>setSplitEnabled(e.target.checked)}/>
+            <span className="font-medium text-gray-700">Split this bill — pay part now / part later, or across multiple payment methods</span>
+          </label>
+        )}
+
+        {splitEnabled&&!editing&&(
+          <div className="mt-3 border border-gray-100 rounded-xl p-3 space-y-2 bg-gray-50/50">
+            {installments.map((row:any,i:number)=>(
+              <div key={i} className="grid grid-cols-12 gap-2 items-center bg-white rounded-lg p-2 border border-gray-100">
+                <div className="col-span-3">
+                  <input className="input py-1.5 text-sm" type="number" placeholder="Amount"
+                    value={row.amount}
+                    onChange={e=>setInstallments((rows:any)=>rows.map((r:any,idx:number)=>idx===i?{...r,amount:e.target.value}:r))}/>
+                </div>
+                <div className="col-span-3">
+                  <select className="input py-1.5 text-sm" value={row.mode_of_payment}
+                    onChange={e=>setInstallments((rows:any)=>rows.map((r:any,idx:number)=>idx===i?{...r,mode_of_payment:e.target.value}:r))}>
+                    {PAY_MODES.map((m:string)=><option key={m}>{m}</option>)}
+                  </select>
+                </div>
+                <div className="col-span-2">
+                  <select className="input py-1.5 text-sm" value={row.status}
+                    onChange={e=>setInstallments((rows:any)=>rows.map((r:any,idx:number)=>idx===i?{...r,status:e.target.value}:r))}>
+                    <option value="paid">Paid</option>
+                    <option value="pending">Pending</option>
+                  </select>
+                </div>
+                <div className="col-span-3">
+                  <input className="input py-1.5 text-sm" type="date" title={row.status==='paid'?'Payment date':'Due date'}
+                    value={row.date}
+                    onChange={e=>setInstallments((rows:any)=>rows.map((r:any,idx:number)=>idx===i?{...r,date:e.target.value}:r))}/>
+                </div>
+                <div className="col-span-1 flex justify-end">
+                  {installments.length>1&&(
+                    <button onClick={()=>setInstallments((rows:any)=>rows.filter((_:any,idx:number)=>idx!==i))} className="text-gray-300 hover:text-red-500">
+                      <Trash2 className="w-3.5 h-3.5"/>
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+            <button className="btn btn-sm" onClick={()=>setInstallments((rows:any)=>[...rows,emptySplitRow()])}>
+              <Plus className="w-3.5 h-3.5"/> Add installment
+            </button>
+            <div className={clsx('flex justify-between items-center px-3 py-2 rounded-lg text-sm mt-1',
+              splitMismatch?'bg-red-50 text-red-600':'bg-emerald-50 text-emerald-700')}>
+              <span>Installments total: {fmt(installmentsTotal)}</span>
+              <span className="font-semibold">
+                {splitMismatch
+                  ? `Bill is ${fmt(+form.amount||0)} — ${installmentsTotal>+(form.amount||0)?'over':'short'} by ${fmt(Math.abs((+form.amount||0)-installmentsTotal))}`
+                  : '✓ Matches total bill'}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {!splitEnabled&&form.amount&&form.discount&&+form.discount>0&&(
           <div className="mt-3 flex justify-between items-center px-3 py-2 bg-blue-50 rounded-lg text-sm">
             <span className="text-blue-700">{fmt(+form.amount)} - {fmt(+form.discount)} discount</span>
             <span className="font-semibold text-emerald-700">= {fmt(Math.max(0,+form.amount-+form.discount))}</span>
@@ -2701,13 +2801,45 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
           </div>
           <div className="flex gap-2">
             <button className="btn" onClick={()=>setOpen(false)}>Cancel</button>
-            <button className="btn-primary" onClick={save} disabled={busy}>
+            <button className="btn-primary" onClick={save} disabled={busy||(splitEnabled&&!editing&&(splitMismatch||!form.student_id))}>
               {busy?<Loader2 className="w-4 h-4 animate-spin"/>:<CheckCircle className="w-4 h-4"/>}
-              {editing?'Save Changes':'Record Payment'}
+              {editing?'Save Changes':splitEnabled?`Record ${installments.length} Installments`:'Record Payment'}
             </button>
           </div>
         </div>
       </Modal>
+
+      {/* Installment group summary */}
+      {groupView&&(()=>{
+        const siblings=payments.filter((p:any)=>p.invoice_group_id===groupView.invoice_group_id).sort((a:any,b:any)=>(a.installment_no||0)-(b.installment_no||0))
+        const total=groupView.total_invoice_amount||0
+        const paidSoFar=siblings.filter((s:any)=>s.status==='paid').reduce((a:number,s:any)=>a+s.amount,0)
+        return(
+          <Modal open={!!groupView} onClose={()=>setGroupView(null)} title="Package Bill — Installments">
+            <div className="space-y-3">
+              <div className="bg-brand-50 rounded-xl p-3 text-sm">
+                <div className="font-medium text-brand-700">{groupView.students?.full_name||groupView.student_name}</div>
+                <div className="text-xs text-brand-600 mt-1">Total bill: {fmt(total)} · Paid so far: {fmt(paidSoFar)} · Remaining: {fmt(Math.max(0,total-paidSoFar))}</div>
+              </div>
+              <div className="space-y-1.5">
+                {siblings.map((s:any)=>(
+                  <div key={s.id} className="flex items-center justify-between text-sm px-3 py-2 bg-gray-50 rounded-lg">
+                    <div>
+                      <div className="font-medium">Installment {s.installment_no} of {s.installment_count}</div>
+                      <div className="text-xs text-gray-400">{s.mode_of_payment} · {s.status==='paid'?`Paid ${s.payment_date}`:`Due ${s.due_date||'—'}`}</div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className={clsx('badge',s.status==='paid'?'bg-emerald-50 text-emerald-700':'bg-amber-50 text-amber-700')}>{s.status}</span>
+                      <span className="font-semibold">{fmt(s.amount)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="flex justify-end"><button className="btn" onClick={()=>setGroupView(null)}>Close</button></div>
+            </div>
+          </Modal>
+        )
+      })()}
 
       {/* Import payments */}
       <Modal open={importOpen} onClose={()=>setImportOpen(false)} title="Import Payments" wide>
