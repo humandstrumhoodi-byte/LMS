@@ -690,7 +690,7 @@ function HomeTab({profile,perms,students,profiles,payments,schedules,subjects,le
             <div className="text-xl font-semibold text-emerald-700">{fmt(totalYTD)}</div>
             <div className="text-xs text-emerald-500 mt-1">{ytdPaidList.length} payments</div>
           </button>
-          <button onClick={()=>setPaymentDrilldown({title:'Pending Payments',list:pendingList,color:'text-amber-700'})} className="card p-4 bg-orange-50 border-orange-100 text-left hover:shadow-md transition-shadow">
+          <button onClick={()=>setPaymentDrilldown({title:'Pending Payments',list:[...pendingList,...overdueList],color:'text-amber-700'})} className="card p-4 bg-orange-50 border-orange-100 text-left hover:shadow-md transition-shadow">
             <div className="text-xs text-orange-600 font-medium mb-1">Pending</div>
             <div className="text-xl font-semibold text-orange-700">{fmt(pending)}</div>
             <div className="text-xs text-orange-500 mt-1">{pendingList.length+overdueList.length} invoices</div>
