@@ -6,7 +6,7 @@ import {
   LayoutDashboard, Users, GraduationCap, BookOpen, CalendarDays, Coins,
   Receipt, ShieldCheck, LogOut, Music, Bell, FileText, CheckCircle,
   Plus, Trash2, Edit, Search, X, ChevronRight, Loader2, AlertCircle,
-  Upload, Download, UserPlus, Mail, Send, Eye, EyeOff, CreditCard, Phone, KeyRound, RefreshCw, BarChart2, Clock
+  Upload, Download, UserPlus, Mail, Send, Eye, EyeOff, CreditCard, Phone, KeyRound, RefreshCw, BarChart2, Clock, LifeBuoy, HelpCircle, SplitSquareHorizontal
 } from 'lucide-react'
 import clsx from 'clsx'
 import type { Profile, Perms, Role } from '@/types'
@@ -14,16 +14,39 @@ import { ROLE_PERMS, ROLE_LABEL, ROLE_COLOR, DAYS, TIMES, COLORS } from '@/types
 
 const fmt = (n: number) => '₹' + (n||0).toLocaleString('en-IN')
 
-// Late payment fine: 5% of the outstanding amount per 15 days overdue, compounding on the base amount.
+// Penalty start date: the LATER of (a) 30 days after the invoice was raised, or
+// (b) the 7th of the invoice's billing month — whichever gives the payer more time.
+// This replaces the old "count from due_date" rule with this explicit policy.
+function penaltyStartDate(payment: any): Date | null {
+  const issued = payment.created_at ? new Date(payment.created_at) : null
+  if (!issued || isNaN(issued.getTime())) return null
+  const thirtyDaysAfter = new Date(issued.getTime() + 30*86400000)
+
+  // Billing month comes from month_label (e.g. "July 2026") when parseable,
+  // otherwise falls back to the invoice's own issue month.
+  let billingMonth = issued
+  if (payment.month_label) {
+    const parsed = new Date(`1 ${payment.month_label}`)
+    if (!isNaN(parsed.getTime())) billingMonth = parsed
+  }
+  const seventh = new Date(billingMonth.getFullYear(), billingMonth.getMonth(), 7)
+
+  return thirtyDaysAfter.getTime() > seventh.getTime() ? thirtyDaysAfter : seventh
+}
+
+// Late payment fine: 5% of the outstanding amount per 15 days overdue (past the
+// penalty start date above), compounding on the base amount.
 // e.g. 1-15 days late = +5%, 16-30 days = +10%, 31-45 days = +15%, etc.
 function calcLateFine(payment: any): { periods: number; finePct: number; fineAmount: number; daysOverdue: number } {
-  if (!payment.due_date || payment.status === 'paid' || payment.fine_enabled === false) {
+  if (payment.status === 'paid' || payment.fine_enabled === false) {
     return { periods: 0, finePct: 0, fineAmount: 0, daysOverdue: 0 }
   }
-  const due = new Date(payment.due_date + 'T00:00:00')
+  const start = penaltyStartDate(payment)
+  if (!start) return { periods: 0, finePct: 0, fineAmount: 0, daysOverdue: 0 }
   const today = new Date()
   today.setHours(0,0,0,0)
-  const daysOverdue = Math.floor((today.getTime() - due.getTime()) / 86400000)
+  start.setHours(0,0,0,0)
+  const daysOverdue = Math.floor((today.getTime() - start.getTime()) / 86400000)
   if (daysOverdue <= 0) return { periods: 0, finePct: 0, fineAmount: 0, daysOverdue: 0 }
   const periods = Math.ceil(daysOverdue / 15)
   const finePct = periods * 5
@@ -342,6 +365,7 @@ function DashboardShellInner({profile}:{profile:Profile}){
     {id:'attendance', icon:CheckCircle, label:'Attendance',    show:perms.viewOwnSchedule},
     {id:'users',      icon:ShieldCheck, label:'Users & Roles', show:perms.manageUsers},
     {id:'settings',   icon:Clock,       label:'Center Hours',  show:perms.manageUsers},
+    {id:'help',       icon:LifeBuoy,    label:'Help & Support',show:true},
   ].filter(n=>n.show)
 
   return(
@@ -391,6 +415,7 @@ function DashboardShellInner({profile}:{profile:Profile}){
           {tab==='attendance'&&<AttendanceTab schedules={schedules} subjects={subjects} students={students} profiles={profiles} profile={profile} attendance={attendance} reload={load}/>}
           {tab==='users'&&<UsersTab profiles={profiles} profile={profile} reload={load}/>}
           {tab==='settings'&&<CenterHoursTab profile={profile}/>}
+          {tab==='help'&&<HelpTab profile={profile}/>}
         </div>
       </main>
     </div>
@@ -2984,6 +3009,111 @@ const CH_DAYS = ['Sun','Tue','Wed','Thu','Fri','Sat'] // Mon excluded — perman
 const CH_DAY_LABELS:Record<string,string> = { Sun:'Sunday', Tue:'Tuesday', Wed:'Wednesday', Thu:'Thursday', Fri:'Friday', Sat:'Saturday' }
 const CH_HOUR_OPTIONS = Array.from({length:15},(_,i)=>String(i+7).padStart(2,'0')+':00') // 07:00–21:00
 
+const HOW_TOS = [
+  { q: 'How do I enroll a new student?', a: 'Go to Students → Enroll Student. Fill in their name, contact details, and pick their instrument(s). If they have a sibling already enrolled, give them their own separate student profile — invoices and attendance are always tracked per student, not per family.' },
+  { q: 'How do I record a payment?', a: 'Go to Payments → Record Payment. Pick the student and subject, enter the amount, and save. A receipt email is sent automatically if a split payment marks something as paid.' },
+  { q: 'How do I split a bill into installments or payment methods?', a: 'In Record Payment, check "Split this bill". Enter the total bill amount, then add a row per installment — each with its own amount, payment method (Cash/UPI/Card), and status (Paid now / Pending). The remaining balance and due date are automatically included in the receipt email.' },
+  { q: 'How do I add a class to the schedule?', a: 'Go to Schedule → Week view, and click any empty time slot within your center\'s working hours. The Schedule Class form opens pre-filled with that day and time — just pick the instrument. You can click an already-occupied slot too, to add a second class taught by a different teacher at the same time.' },
+  { q: 'How do I add or remove a student from an existing class?', a: 'Click the class on the schedule grid — the popup that opens (used for sending reminders) also has "Add Another Student to This Class" with a search box, and each student in the Recipients list has a small trash icon to remove them.' },
+  { q: 'A schedule slot looks closed/striped and won\'t let me click it — why?', a: 'That means the slot falls outside your configured Center Hours. Ask your superadmin to review Center Hours if your actual operating hours are different.' },
+  { q: 'How does the pending-payment penalty/reminder system work?', a: 'Any payment marked Pending with a due date automatically enters the fine-reminder workflow — a daily job emails the student once the due date has passed, adding a 5% fee for every 15 days overdue, and repeats every 15 days until paid.' },
+  { q: 'Where do I see if a reminder/receipt was actually sent?', a: 'On the Students page, under each student\'s name, a small bell badge shows the most recent reminder or receipt sent, with the date — hover it for full details.' },
+  { q: 'Why do my Dashboard totals not match a drilldown popup?', a: 'If you ever see this, it usually means a card is summing two categories (like Pending + Overdue) but the popup behind it is only showing one — treat it as a bug and raise a ticket below.' },
+]
+
+function HelpTab({profile}:any){
+  const [openIdx,setOpenIdx]=useState<number|null>(0)
+  const [ticketOpen,setTicketOpen]=useState(false)
+  const [subject,setSubject]=useState('')
+  const [message,setMessage]=useState('')
+  const [category,setCategory]=useState('general')
+  const [priority,setPriority]=useState('normal')
+  const [sending,setSending]=useState(false)
+  const [sent,setSent]=useState(false)
+  const [err,setErr]=useState('')
+
+  async function submitTicket(){
+    if(!subject||!message)return
+    setSending(true);setErr('')
+    try{
+      const apiUrl=process.env.NEXT_PUBLIC_PLATFORM_TICKET_API_URL
+      if(!apiUrl){ setErr('Support ticketing isn\'t configured for this instance yet — contact your platform admin directly.'); setSending(false); return }
+      const res=await fetch(apiUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+        tenant_id: process.env.NEXT_PUBLIC_TENANT_ID||null,
+        tenant_name: process.env.NEXT_PUBLIC_TENANT_NAME||'Unknown',
+        reporter_name: profile?.full_name||'',
+        reporter_email: profile?.email||'',
+        subject, message, category, priority,
+      })})
+      if(!res.ok) throw new Error('Failed to submit')
+      setSent(true);setSubject('');setMessage('')
+    }catch(e){
+      setErr('Could not submit the ticket — check your connection and try again.')
+    }
+    setSending(false)
+  }
+
+  return(
+    <div className="max-w-3xl">
+      <div className="flex items-center justify-between mb-5">
+        <div><h1 className="text-xl font-semibold text-gray-900">Help & Support</h1><p className="text-sm text-gray-400 mt-0.5">How-to guides and raising an issue</p></div>
+        <button className="btn-primary" onClick={()=>setTicketOpen(true)}><LifeBuoy className="w-4 h-4"/> Raise a Ticket</button>
+      </div>
+
+      <div className="card divide-y divide-gray-100 mb-6">
+        {HOW_TOS.map((h,i)=>(
+          <div key={i}>
+            <button onClick={()=>setOpenIdx(openIdx===i?null:i)} className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-gray-50/50">
+              <span className="flex items-center gap-2 font-medium text-sm text-gray-800"><HelpCircle className="w-4 h-4 text-brand-400 flex-shrink-0"/>{h.q}</span>
+              <ChevronRight className={clsx('w-4 h-4 text-gray-300 transition-transform',openIdx===i&&'rotate-90')}/>
+            </button>
+            {openIdx===i&&<div className="px-4 pb-4 text-sm text-gray-500 pl-10">{h.a}</div>}
+          </div>
+        ))}
+      </div>
+
+      {ticketOpen&&(
+        <Modal open={ticketOpen} onClose={()=>{setTicketOpen(false);setSent(false)}} title="Raise a Support Ticket">
+          {sent?(
+            <div className="text-center py-6">
+              <CheckCircle className="w-10 h-10 text-emerald-500 mx-auto mb-2"/>
+              <div className="font-medium">Ticket submitted</div>
+              <div className="text-sm text-gray-400 mt-1">We'll get back to you by email shortly.</div>
+              <button className="btn mt-4" onClick={()=>{setTicketOpen(false);setSent(false)}}>Close</button>
+            </div>
+          ):(
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className="label">Category</label>
+                  <select className="input" value={category} onChange={e=>setCategory(e.target.value)}>
+                    <option value="general">General</option><option value="bug">Something's broken</option>
+                    <option value="billing">Billing</option><option value="feature_request">Feature request</option>
+                    <option value="how_to">How do I…</option>
+                  </select>
+                </div>
+                <div><label className="label">Priority</label>
+                  <select className="input" value={priority} onChange={e=>setPriority(e.target.value)}>
+                    <option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent — blocking my work</option>
+                  </select>
+                </div>
+              </div>
+              <div><label className="label">Subject</label><input className="input" value={subject} onChange={e=>setSubject(e.target.value)} placeholder="Short summary"/></div>
+              <div><label className="label">Message</label><textarea className="input" rows={5} value={message} onChange={e=>setMessage(e.target.value)} placeholder="Describe what's happening, and steps to reproduce if it's a bug"/></div>
+              {err&&<div className="text-sm text-red-600">{err}</div>}
+              <div className="flex justify-end gap-2 pt-2">
+                <button className="btn" onClick={()=>setTicketOpen(false)}>Cancel</button>
+                <button className="btn-primary" onClick={submitTicket} disabled={sending||!subject||!message}>
+                  {sending?<Loader2 className="w-4 h-4 animate-spin"/>:<Send className="w-4 h-4"/>} Submit
+                </button>
+              </div>
+            </div>
+          )}
+        </Modal>
+      )}
+    </div>
+  )
+}
+
 function CenterHoursTab({profile}:any){
   const [hours,setHours]=useState<any[]>([])
   const [loading,setLoading]=useState(true)
@@ -3404,6 +3534,26 @@ function PackagesTab({ packages, subjects, reload }: any) {
 }
 
 export default function DashboardShell({profile}:{profile:Profile}){
+  const [tenantStatus,setTenantStatus]=useState<'checking'|'ok'|'suspended'>('checking')
+  useEffect(()=>{
+    const statusApiUrl=process.env.NEXT_PUBLIC_PLATFORM_STATUS_API_URL
+    const tenantId=process.env.NEXT_PUBLIC_TENANT_ID
+    if(!statusApiUrl||!tenantId){ setTenantStatus('ok'); return } // not configured (e.g. your own original instance) — always allow
+    fetch(`${statusApiUrl}?id=${tenantId}`).then(r=>r.json()).then(d=>{
+      setTenantStatus(d.status==='suspended'?'suspended':'ok')
+    }).catch(()=>setTenantStatus('ok')) // fail open — a network hiccup shouldn't lock anyone out
+  },[])
+
+  if(tenantStatus==='checking') return <div className="min-h-screen flex items-center justify-center"><Loader2 className="w-6 h-6 animate-spin text-brand-500"/></div>
+  if(tenantStatus==='suspended') return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+      <div className="card p-8 max-w-sm text-center">
+        <div className="text-3xl mb-3">🔒</div>
+        <h1 className="text-lg font-semibold mb-2">Access Suspended</h1>
+        <p className="text-sm text-gray-500">This instance's access has been suspended. Please contact your platform admin to resolve this.</p>
+      </div>
+    </div>
+  )
   return <ErrorBoundary><DashboardShellInner profile={profile}/></ErrorBoundary>
 }
 
@@ -3765,8 +3915,107 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
     setMarkingPaidIds(m => ({ ...m, [p.id]: false }))
   }
 
+  // ── Split payment: partial payment across multiple modes (e.g. 5000 UPI + 5000
+  // Cash + 1000 remaining pending) for a single invoice line. Replaces the one
+  // row with N rows sharing the same invoice_number, so reporting/totals still
+  // sum correctly without any special-casing elsewhere.
+  const [splitTarget, setSplitTarget] = useState<any>(null)
+  const [splitParts, setSplitParts] = useState<{amount:string,mode:string}[]>([])
+  const [splitBusy, setSplitBusy] = useState(false)
+  function openSplitModal(p: any) {
+    setSplitTarget(p)
+    setSplitParts([{ amount: '', mode: 'UPI' }])
+  }
+  const splitPartsTotal = splitParts.reduce((sum,pt)=>sum+(parseFloat(pt.amount)||0), 0)
+  const splitRemaining = splitTarget ? Math.max(0, splitTarget.amount - splitPartsTotal) : 0
+  async function saveSplitPayment() {
+    if (!splitTarget) return
+    const validParts = splitParts.filter(pt => (parseFloat(pt.amount)||0) > 0)
+    if (!validParts.length) { alert('Enter at least one paid amount'); return }
+    if (splitPartsTotal > splitTarget.amount) { alert(`Split total (${fmt(splitPartsTotal)}) can't exceed the invoice amount (${fmt(splitTarget.amount)})`); return }
+
+    setSplitBusy(true)
+    const today = new Date().toISOString().slice(0, 10)
+    const baseDescription = (splitTarget.description || 'Tuition').replace(/ \(Split \d+\/\d+.*?\)$/,'').replace(/ \(Remaining balance\)$/,'')
+    const totalParts = validParts.length + (splitRemaining>0?1:0)
+    const baseRow = {
+      student_id: splitTarget.student_id,
+      subject_id: splitTarget.subject_id,
+      month_label: splitTarget.month_label,
+      due_date: splitTarget.due_date,
+      invoice_number: splitTarget.invoice_number,
+      student_name: splitTarget.student_name,
+      student_email: splitTarget.student_email,
+      student_phone: splitTarget.student_phone,
+      recorded_by: profile?.full_name || 'Academy',
+      created_at: splitTarget.created_at, // preserve original invoice date for penalty timing
+    }
+    // Two split rows can easily share the same invoice_number AND amount (e.g.
+    // 5000 UPI + 5000 Cash), so description is made distinct per row to keep
+    // each row identifiable in reports. Appending the mode/part label keeps it
+    // human-readable too.
+    //
+    // IMPORTANT: this UPDATEs the original row in place to become the first split
+    // part, and only INSERTs the remaining parts — it deliberately never deletes
+    // the original row. Deleting a payment is restricted to superadmin only (by
+    // design, from the invoice-deletion-approval feature), so a plain delete here
+    // would silently fail for center_manager and leave a stale duplicate row behind.
+    const [firstPart, ...restParts] = validParts
+    const remainderRow = splitRemaining > 0 ? {
+      ...baseRow,
+      amount: splitRemaining,
+      mode_of_payment: null,
+      status: 'pending',
+      payment_date: null,
+      description: `${baseDescription} (Remaining balance)`,
+    } : null
+
+    const { error: updErr } = await supabase.from('payments').update({
+      amount: parseFloat(firstPart.amount),
+      mode_of_payment: firstPart.mode,
+      status: 'paid',
+      payment_date: today,
+      description: `${baseDescription} (Split 1/${totalParts}: ${firstPart.mode})`,
+    }).eq('id', splitTarget.id)
+    if (updErr) { alert(updErr.message); setSplitBusy(false); return }
+
+    const additionalRows = [
+      ...restParts.map((pt, i) => ({
+        ...baseRow,
+        amount: parseFloat(pt.amount),
+        mode_of_payment: pt.mode,
+        status: 'paid',
+        payment_date: today,
+        description: `${baseDescription} (Split ${i+2}/${totalParts}: ${pt.mode})`,
+      })),
+      ...(remainderRow ? [remainderRow] : []),
+    ]
+    if (additionalRows.length) {
+      const { error: insErr } = await supabase.from('payments').insert(additionalRows)
+      if (insErr) { alert(`First split part saved, but the remaining parts failed: ${insErr.message}`); setSplitBusy(false); reload(); return }
+    }
+
+    await supabase.from('billing_audit_log').insert({
+      payment_id: splitTarget.id,
+      student_id: student.id,
+      changed_by: profile?.id || null,
+      changed_by_name: profile?.full_name || 'Unknown',
+      field_changes: { split: { old: { amount: splitTarget.amount, status: splitTarget.status }, new: ([firstPart, ...restParts].map((p:any)=>({amount:p.amount,mode:p.mode})) as any[]).concat(remainderRow?[{amount:remainderRow.amount,status:'pending'}]:[]) } },
+      reason: `Invoice split into ${totalParts} part(s)`,
+    })
+
+    setSplitBusy(false)
+    setSplitTarget(null)
+    setSplitParts([])
+    reload()
+  }
+
   const totalPaid    = payments.filter((p:any) => p.status === 'paid').reduce((a:number,p:any) => a + p.amount, 0)
+  // NOTE: totalPending is deliberately the raw invoice amount only — it does NOT
+  // include late fees. Fines are tracked and shown separately (totalFinesOutstanding)
+  // so admins can see the base amount owed vs. the penalty on top of it.
   const totalPending = payments.filter((p:any) => p.status === 'pending' || p.status === 'overdue').reduce((a:number,p:any) => a + p.amount, 0)
+  const totalFinesOutstanding = payments.filter((p:any) => p.status === 'pending' || p.status === 'overdue').reduce((a:number,p:any) => a + calcLateFine(p).fineAmount, 0)
   const totalDiscount= payments.reduce((a:number,p:any) => a + (p.discount||0), 0)
   const enrolledSubs = subjects.filter((s:any) =>
     student.student_subjects?.some((ss:any) => ss.subject_id === s.id)
@@ -3877,10 +4126,11 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
         </div>
 
         {/* Summary strip */}
-        <div className="grid grid-cols-4 gap-0 border-b border-gray-100 flex-shrink-0">
+        <div className="grid grid-cols-5 gap-0 border-b border-gray-100 flex-shrink-0">
           {[
             { label:'Total Paid',    val:fmt(totalPaid),    color:'text-emerald-700', bg:'bg-emerald-50/60' },
             { label:'Pending',       val:fmt(totalPending), color:'text-amber-700',   bg:'bg-amber-50/60' },
+            { label:'Fines',         val:fmt(totalFinesOutstanding), color:'text-rose-700', bg:'bg-rose-50/60' },
             { label:'Discounts',     val:fmt(totalDiscount),color:'text-blue-700',    bg:'bg-blue-50/60' },
             { label:'Transactions',  val:String(payments.length), color:'text-gray-700', bg:'bg-gray-50/60' },
           ].map(s => (
@@ -4118,6 +4368,7 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
                     <tbody>
                       {payments.map((p:any) => {
                         const pendingDel = pendingDeleteFor(p.id)
+                        const fine = (p.status==='pending'||p.status==='overdue') ? calcLateFine(p) : null
                         return (
                         <tr key={p.id} className={clsx('hover:bg-gray-50/50', p.status==='failed'&&'opacity-40')}>
                           <td className="td text-gray-500 whitespace-nowrap">{p.payment_date||'—'}</td>
@@ -4138,7 +4389,12 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
                           </td>
                           <td className="td text-gray-400">{p.mode_of_payment||'—'}</td>
                           <td className="td text-right text-blue-600">{p.discount>0?`-${fmt(p.discount)}`:''}</td>
-                          <td className="td text-right font-semibold">{fmt(p.amount)}</td>
+                          <td className="td text-right font-semibold">
+                            {fmt(p.amount)}
+                            {fine && fine.fineAmount > 0 && (
+                              <div className="text-xs text-rose-500 font-medium">+{fmt(fine.fineAmount)} fine ({fine.daysOverdue}d)</div>
+                            )}
+                          </td>
                           <td className="td">
                             <span className={statusBadge(p.status)}>{p.status}</span>
                             {pendingDel && <div className="text-xs text-amber-600 mt-1">Deletion pending</div>}
@@ -4153,6 +4409,15 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
                                   className="btn btn-sm text-emerald-600 border-emerald-200 hover:bg-emerald-50"
                                 >
                                   {markingPaidIds[p.id]?<Loader2 className="w-3 h-3 animate-spin"/>:<CheckCircle className="w-3 h-3"/>}
+                                </button>
+                              )}
+                              {(p.status==='pending'||p.status==='overdue')&&!pendingDel&&(
+                                <button
+                                  onClick={()=>openSplitModal(p)}
+                                  title="Split into multiple payment modes / partial payment"
+                                  className="btn btn-sm text-blue-600 border-blue-200 hover:bg-blue-50"
+                                >
+                                  <SplitSquareHorizontal className="w-3 h-3"/>
                                 </button>
                               )}
                               {!pendingDel&&<button onClick={()=>setEditPayment(p)} title="Edit this historical billing record" className="btn btn-sm"><Edit className="w-3 h-3"/></button>}
@@ -4227,6 +4492,70 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
           onSaved={()=>{setEditPayment(null);reload()}}
           onDeleteInstead={(p:any)=>{ isSuperadmin ? deleteDirectly(p) : setDeleteTarget(p) }}
         />
+      )}
+
+      {/* ── Split payment: partial payment across multiple modes ── */}
+      {splitTarget && (
+        <Modal open={!!splitTarget} onClose={()=>{setSplitTarget(null);setSplitParts([])}} title="Split Payment">
+          <div className="space-y-4">
+            <div className="bg-gray-50 rounded-xl p-3 text-sm text-gray-600 flex justify-between">
+              <span>{splitTarget.invoice_number ? `Invoice #${splitTarget.invoice_number}` : 'Invoice'} · {splitTarget.month_label||'—'}</span>
+              <span className="font-semibold text-gray-900">{fmt(splitTarget.amount)}</span>
+            </div>
+
+            <div className="space-y-2">
+              <label className="label">Payments received</label>
+              {splitParts.map((pt, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <input
+                    className="input flex-1"
+                    type="number"
+                    placeholder="Amount"
+                    value={pt.amount}
+                    onChange={e=>setSplitParts(parts=>parts.map((x,idx)=>idx===i?{...x,amount:e.target.value}:x))}
+                  />
+                  <select
+                    className="input w-32"
+                    value={pt.mode}
+                    onChange={e=>setSplitParts(parts=>parts.map((x,idx)=>idx===i?{...x,mode:e.target.value}:x))}
+                  >
+                    <option value="UPI">UPI</option>
+                    <option value="Cash">Cash</option>
+                    <option value="Credit Card">Credit Card</option>
+                    <option value="Debit Card">Debit Card</option>
+                    <option value="Bank Transfer">Bank Transfer</option>
+                    <option value="Cheque">Cheque</option>
+                  </select>
+                  {splitParts.length > 1 && (
+                    <button className="btn btn-sm text-red-500" onClick={()=>setSplitParts(parts=>parts.filter((_,idx)=>idx!==i))}><Trash2 className="w-3 h-3"/></button>
+                  )}
+                </div>
+              ))}
+              <button className="btn btn-sm" onClick={()=>setSplitParts(parts=>[...parts,{amount:'',mode:'UPI'}])}><Plus className="w-3 h-3"/> Add another mode</button>
+            </div>
+
+            <div className="flex justify-between items-center px-4 py-2.5 rounded-xl text-sm bg-blue-50 border border-blue-100">
+              <span className="text-gray-600">Paid now:</span>
+              <span className="font-semibold text-blue-700">{fmt(splitPartsTotal)}</span>
+            </div>
+            <div className={clsx('flex justify-between items-center px-4 py-2.5 rounded-xl text-sm',
+              splitRemaining > 0 ? 'bg-amber-50 border border-amber-100' : 'bg-emerald-50 border border-emerald-100'
+            )}>
+              <span className="text-gray-600">Remaining (stays pending):</span>
+              <span className={clsx('font-semibold', splitRemaining > 0 ? 'text-amber-700' : 'text-emerald-700')}>{fmt(splitRemaining)}</span>
+            </div>
+            {splitPartsTotal > splitTarget.amount && (
+              <p className="text-xs text-red-500">Split total can't exceed the invoice amount.</p>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button className="btn" onClick={()=>{setSplitTarget(null);setSplitParts([])}}>Cancel</button>
+              <button className="btn-primary" onClick={saveSplitPayment} disabled={splitBusy || splitPartsTotal===0 || splitPartsTotal>splitTarget.amount}>
+                {splitBusy?<Loader2 className="w-4 h-4 animate-spin"/>:null} Save Split
+              </button>
+            </div>
+          </div>
+        </Modal>
       )}
 
       {/* ── Request invoice deletion (center_manager) ── */}
