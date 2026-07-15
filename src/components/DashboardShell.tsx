@@ -6,7 +6,7 @@ import {
   LayoutDashboard, Users, GraduationCap, BookOpen, CalendarDays, Coins,
   Receipt, ShieldCheck, LogOut, Music, Bell, FileText, CheckCircle,
   Plus, Trash2, Edit, Search, X, ChevronRight, Loader2, AlertCircle,
-  Upload, Download, UserPlus, Mail, Send, Eye, EyeOff, CreditCard, Phone, KeyRound, RefreshCw, BarChart2, Clock
+  Upload, Download, UserPlus, Mail, Send, Eye, EyeOff, CreditCard, Phone, KeyRound, RefreshCw, BarChart2, Clock, LifeBuoy, HelpCircle
 } from 'lucide-react'
 import clsx from 'clsx'
 import type { Profile, Perms, Role } from '@/types'
@@ -342,6 +342,7 @@ function DashboardShellInner({profile}:{profile:Profile}){
     {id:'attendance', icon:CheckCircle, label:'Attendance',    show:perms.viewOwnSchedule},
     {id:'users',      icon:ShieldCheck, label:'Users & Roles', show:perms.manageUsers},
     {id:'settings',   icon:Clock,       label:'Center Hours',  show:perms.manageUsers},
+    {id:'help',       icon:LifeBuoy,    label:'Help & Support',show:true},
   ].filter(n=>n.show)
 
   return(
@@ -391,6 +392,7 @@ function DashboardShellInner({profile}:{profile:Profile}){
           {tab==='attendance'&&<AttendanceTab schedules={schedules} subjects={subjects} students={students} profiles={profiles} profile={profile} attendance={attendance} reload={load}/>}
           {tab==='users'&&<UsersTab profiles={profiles} profile={profile} reload={load}/>}
           {tab==='settings'&&<CenterHoursTab profile={profile}/>}
+          {tab==='help'&&<HelpTab profile={profile}/>}
         </div>
       </main>
     </div>
@@ -2984,6 +2986,111 @@ const CH_DAYS = ['Sun','Tue','Wed','Thu','Fri','Sat'] // Mon excluded — perman
 const CH_DAY_LABELS:Record<string,string> = { Sun:'Sunday', Tue:'Tuesday', Wed:'Wednesday', Thu:'Thursday', Fri:'Friday', Sat:'Saturday' }
 const CH_HOUR_OPTIONS = Array.from({length:15},(_,i)=>String(i+7).padStart(2,'0')+':00') // 07:00–21:00
 
+const HOW_TOS = [
+  { q: 'How do I enroll a new student?', a: 'Go to Students → Enroll Student. Fill in their name, contact details, and pick their instrument(s). If they have a sibling already enrolled, give them their own separate student profile — invoices and attendance are always tracked per student, not per family.' },
+  { q: 'How do I record a payment?', a: 'Go to Payments → Record Payment. Pick the student and subject, enter the amount, and save. A receipt email is sent automatically if a split payment marks something as paid.' },
+  { q: 'How do I split a bill into installments or payment methods?', a: 'In Record Payment, check "Split this bill". Enter the total bill amount, then add a row per installment — each with its own amount, payment method (Cash/UPI/Card), and status (Paid now / Pending). The remaining balance and due date are automatically included in the receipt email.' },
+  { q: 'How do I add a class to the schedule?', a: 'Go to Schedule → Week view, and click any empty time slot within your center\'s working hours. The Schedule Class form opens pre-filled with that day and time — just pick the instrument. You can click an already-occupied slot too, to add a second class taught by a different teacher at the same time.' },
+  { q: 'How do I add or remove a student from an existing class?', a: 'Click the class on the schedule grid — the popup that opens (used for sending reminders) also has "Add Another Student to This Class" with a search box, and each student in the Recipients list has a small trash icon to remove them.' },
+  { q: 'A schedule slot looks closed/striped and won\'t let me click it — why?', a: 'That means the slot falls outside your configured Center Hours. Ask your superadmin to review Center Hours if your actual operating hours are different.' },
+  { q: 'How does the pending-payment penalty/reminder system work?', a: 'Any payment marked Pending with a due date automatically enters the fine-reminder workflow — a daily job emails the student once the due date has passed, adding a 5% fee for every 15 days overdue, and repeats every 15 days until paid.' },
+  { q: 'Where do I see if a reminder/receipt was actually sent?', a: 'On the Students page, under each student\'s name, a small bell badge shows the most recent reminder or receipt sent, with the date — hover it for full details.' },
+  { q: 'Why do my Dashboard totals not match a drilldown popup?', a: 'If you ever see this, it usually means a card is summing two categories (like Pending + Overdue) but the popup behind it is only showing one — treat it as a bug and raise a ticket below.' },
+]
+
+function HelpTab({profile}:any){
+  const [openIdx,setOpenIdx]=useState<number|null>(0)
+  const [ticketOpen,setTicketOpen]=useState(false)
+  const [subject,setSubject]=useState('')
+  const [message,setMessage]=useState('')
+  const [category,setCategory]=useState('general')
+  const [priority,setPriority]=useState('normal')
+  const [sending,setSending]=useState(false)
+  const [sent,setSent]=useState(false)
+  const [err,setErr]=useState('')
+
+  async function submitTicket(){
+    if(!subject||!message)return
+    setSending(true);setErr('')
+    try{
+      const apiUrl=process.env.NEXT_PUBLIC_PLATFORM_TICKET_API_URL
+      if(!apiUrl){ setErr('Support ticketing isn\'t configured for this instance yet — contact your platform admin directly.'); setSending(false); return }
+      const res=await fetch(apiUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+        tenant_id: process.env.NEXT_PUBLIC_TENANT_ID||null,
+        tenant_name: process.env.NEXT_PUBLIC_TENANT_NAME||'Unknown',
+        reporter_name: profile?.full_name||'',
+        reporter_email: profile?.email||'',
+        subject, message, category, priority,
+      })})
+      if(!res.ok) throw new Error('Failed to submit')
+      setSent(true);setSubject('');setMessage('')
+    }catch(e){
+      setErr('Could not submit the ticket — check your connection and try again.')
+    }
+    setSending(false)
+  }
+
+  return(
+    <div className="max-w-3xl">
+      <div className="flex items-center justify-between mb-5">
+        <div><h1 className="text-xl font-semibold text-gray-900">Help & Support</h1><p className="text-sm text-gray-400 mt-0.5">How-to guides and raising an issue</p></div>
+        <button className="btn-primary" onClick={()=>setTicketOpen(true)}><LifeBuoy className="w-4 h-4"/> Raise a Ticket</button>
+      </div>
+
+      <div className="card divide-y divide-gray-100 mb-6">
+        {HOW_TOS.map((h,i)=>(
+          <div key={i}>
+            <button onClick={()=>setOpenIdx(openIdx===i?null:i)} className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-gray-50/50">
+              <span className="flex items-center gap-2 font-medium text-sm text-gray-800"><HelpCircle className="w-4 h-4 text-brand-400 flex-shrink-0"/>{h.q}</span>
+              <ChevronRight className={clsx('w-4 h-4 text-gray-300 transition-transform',openIdx===i&&'rotate-90')}/>
+            </button>
+            {openIdx===i&&<div className="px-4 pb-4 text-sm text-gray-500 pl-10">{h.a}</div>}
+          </div>
+        ))}
+      </div>
+
+      {ticketOpen&&(
+        <Modal open={ticketOpen} onClose={()=>{setTicketOpen(false);setSent(false)}} title="Raise a Support Ticket">
+          {sent?(
+            <div className="text-center py-6">
+              <CheckCircle className="w-10 h-10 text-emerald-500 mx-auto mb-2"/>
+              <div className="font-medium">Ticket submitted</div>
+              <div className="text-sm text-gray-400 mt-1">We'll get back to you by email shortly.</div>
+              <button className="btn mt-4" onClick={()=>{setTicketOpen(false);setSent(false)}}>Close</button>
+            </div>
+          ):(
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className="label">Category</label>
+                  <select className="input" value={category} onChange={e=>setCategory(e.target.value)}>
+                    <option value="general">General</option><option value="bug">Something's broken</option>
+                    <option value="billing">Billing</option><option value="feature_request">Feature request</option>
+                    <option value="how_to">How do I…</option>
+                  </select>
+                </div>
+                <div><label className="label">Priority</label>
+                  <select className="input" value={priority} onChange={e=>setPriority(e.target.value)}>
+                    <option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent — blocking my work</option>
+                  </select>
+                </div>
+              </div>
+              <div><label className="label">Subject</label><input className="input" value={subject} onChange={e=>setSubject(e.target.value)} placeholder="Short summary"/></div>
+              <div><label className="label">Message</label><textarea className="input" rows={5} value={message} onChange={e=>setMessage(e.target.value)} placeholder="Describe what's happening, and steps to reproduce if it's a bug"/></div>
+              {err&&<div className="text-sm text-red-600">{err}</div>}
+              <div className="flex justify-end gap-2 pt-2">
+                <button className="btn" onClick={()=>setTicketOpen(false)}>Cancel</button>
+                <button className="btn-primary" onClick={submitTicket} disabled={sending||!subject||!message}>
+                  {sending?<Loader2 className="w-4 h-4 animate-spin"/>:<Send className="w-4 h-4"/>} Submit
+                </button>
+              </div>
+            </div>
+          )}
+        </Modal>
+      )}
+    </div>
+  )
+}
+
 function CenterHoursTab({profile}:any){
   const [hours,setHours]=useState<any[]>([])
   const [loading,setLoading]=useState(true)
@@ -3404,6 +3511,26 @@ function PackagesTab({ packages, subjects, reload }: any) {
 }
 
 export default function DashboardShell({profile}:{profile:Profile}){
+  const [tenantStatus,setTenantStatus]=useState<'checking'|'ok'|'suspended'>('checking')
+  useEffect(()=>{
+    const statusApiUrl=process.env.NEXT_PUBLIC_PLATFORM_STATUS_API_URL
+    const tenantId=process.env.NEXT_PUBLIC_TENANT_ID
+    if(!statusApiUrl||!tenantId){ setTenantStatus('ok'); return } // not configured (e.g. your own original instance) — always allow
+    fetch(`${statusApiUrl}?id=${tenantId}`).then(r=>r.json()).then(d=>{
+      setTenantStatus(d.status==='suspended'?'suspended':'ok')
+    }).catch(()=>setTenantStatus('ok')) // fail open — a network hiccup shouldn't lock anyone out
+  },[])
+
+  if(tenantStatus==='checking') return <div className="min-h-screen flex items-center justify-center"><Loader2 className="w-6 h-6 animate-spin text-brand-500"/></div>
+  if(tenantStatus==='suspended') return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+      <div className="card p-8 max-w-sm text-center">
+        <div className="text-3xl mb-3">🔒</div>
+        <h1 className="text-lg font-semibold mb-2">Access Suspended</h1>
+        <p className="text-sm text-gray-500">This instance's access has been suspended. Please contact your platform admin to resolve this.</p>
+      </div>
+    </div>
+  )
   return <ErrorBoundary><DashboardShellInner profile={profile}/></ErrorBoundary>
 }
 
