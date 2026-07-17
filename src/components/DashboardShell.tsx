@@ -53,6 +53,20 @@ function calcLateFine(payment: any): { periods: number; finePct: number; fineAmo
   const fineAmount = Math.round((payment.amount || 0) * finePct / 100)
   return { periods, finePct, fineAmount, daysOverdue }
 }
+
+// For payments already marked "paid" — was it paid after the penalty start date?
+// (calcLateFine always returns 0 for paid payments since there's no fine to charge
+// once collected; this is a separate, read-only check for display purposes only.)
+function wasPaidLate(payment: any): { isLate: boolean; daysLate: number } {
+  if (payment.status !== 'paid' || !payment.payment_date) return { isLate: false, daysLate: 0 }
+  const start = penaltyStartDate(payment)
+  if (!start) return { isLate: false, daysLate: 0 }
+  const paid = new Date(payment.payment_date + 'T00:00:00')
+  start.setHours(0,0,0,0)
+  paid.setHours(0,0,0,0)
+  const daysLate = Math.floor((paid.getTime() - start.getTime()) / 86400000)
+  return daysLate > 0 ? { isLate: true, daysLate } : { isLate: false, daysLate: 0 }
+}
 const ini = (name: string) => (name||'?').split(' ').map((w:string)=>w[0]).join('').toUpperCase().slice(0,2)
 const avatarColors = ['bg-violet-100 text-violet-700','bg-sky-100 text-sky-700','bg-emerald-100 text-emerald-700','bg-amber-100 text-amber-700','bg-rose-100 text-rose-700']
 const ac = (i:number) => avatarColors[i%avatarColors.length]
@@ -431,6 +445,7 @@ function PaymentDrilldown({title,list,color,onClose,onViewAll}:{title:string;lis
   const [sending,setSending]=useState<Record<string,boolean>>({})
   const [sentIds,setSentIds]=useState<Record<string,boolean>>({})
   const grandTotal=list.reduce((a:number,p:any)=>a+p.amount,0)
+  const lateCount=list.filter((p:any)=>wasPaidLate(p).isLate).length
 
   async function remind(p:any){
     const email=p.students?.email||p.student_email
@@ -464,7 +479,7 @@ function PaymentDrilldown({title,list,color,onClose,onViewAll}:{title:string;lis
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
           <div>
             <h2 className="font-semibold text-gray-900">{title}</h2>
-            <p className="text-xs text-gray-400 mt-0.5">{list.length} payment{list.length!==1?'s':''} · {fmt(grandTotal)}</p>
+            <p className="text-xs text-gray-400 mt-0.5">{list.length} payment{list.length!==1?'s':''} · {fmt(grandTotal)}{lateCount>0&&<span className="text-rose-500"> · {lateCount} paid late</span>}</p>
           </div>
           <div className="flex gap-2">
             <button onClick={onViewAll} className="btn btn-sm">View All →</button>
@@ -476,6 +491,7 @@ function PaymentDrilldown({title,list,color,onClose,onViewAll}:{title:string;lis
             ? <div className="py-10 text-center text-gray-300">No payments</div>
             : list.map((p:any,i:number)=>{
                 const fine=calcLateFine(p)
+                const late=wasPaidLate(p)
                 const name=p.students?.full_name||p.student_name||'Unknown'
                 const email=p.students?.email||p.student_email
                 return(
@@ -486,6 +502,8 @@ function PaymentDrilldown({title,list,color,onClose,onViewAll}:{title:string;lis
                         <div className="text-sm font-medium text-gray-900 truncate">{name}</div>
                         <div className="text-xs text-gray-400 truncate">
                           {p.subjects?.name||p.description||'Tuition'} · {p.month_label}
+                          {p.payment_date&&<span className="text-emerald-600"> · Paid {new Date(p.payment_date+'T00:00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short'})}</span>}
+                          {late.isLate&&<span className="text-rose-500 font-medium"> · Late by {late.daysLate}d</span>}
                           {fine.daysOverdue>0&&<span className="text-red-500 font-medium"> · {fine.daysOverdue}d overdue</span>}
                         </div>
                       </div>
