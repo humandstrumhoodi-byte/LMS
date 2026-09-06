@@ -5316,6 +5316,7 @@ function ReportsTab({ students, subjects, payments, profiles, attendance, reload
     { id: 'payment_ytd',         label: 'Year to Date',           group: 'Payment Reports' },
     { id: 'payment_mode',        label: 'Payment by Mode',        group: 'Payment Reports' },
     { id: 'payment_subject',     label: 'Revenue by Subject',     group: 'Payment Reports' },
+    { id: 'payment_forecast',    label: 'Revenue Forecast',       group: 'Payment Reports' },
     { id: 'attendance_report',   label: 'Attendance Summary',     group: 'Other' },
   ]
 
@@ -5663,6 +5664,15 @@ function ReportsTab({ students, subjects, payments, profiles, attendance, reload
               fyLabel={fyLabel}
               exportCSV={exportCSV}
               BarChart={BarChart}
+            />
+          )}
+
+          {activeReport === 'payment_forecast' && (
+            <RevenueForecastReport
+              students={students}
+              subjects={subjects}
+              payments={payments}
+              exportCSV={exportCSV}
             />
           )}
 
@@ -6033,6 +6043,213 @@ function RevenueBySubjectReport({ bySubjectYTD, bySubjectMTD, fyLabel, exportCSV
   )
 }
 
+
+// ══════════════════════════════════════════════════════════════
+// REVENUE FORECAST
+// "Forecasted revenue for month M" = revenue already invoiced for M
+// (any payment whose billing month is M) + revenue we project will be
+// invoiced for M from students whose current paid-for period is about
+// to run out and haven't been re-invoiced yet.
+//
+// Projection method per active student+subject: take their most recent
+// payment, treat its `months` field as the billing cycle length (defaults
+// to 1 = monthly, since that's what this school's fee_structures use and
+// `months`/`package_id` aren't consistently populated on older invoices),
+// and roll the due date forward cycle-by-cycle from that payment until it
+// reaches today or later. Where that lands is this student's next expected
+// renewal — if it falls in the selected month, its last-paid amount is
+// counted as expected revenue. A student who needed more than one cycle
+// to catch up to today is flagged "overdue" — their actual renewal date
+// is uncertain, so treat that row with more caution than the rest.
+// ══════════════════════════════════════════════════════════════
+function paymentAnchorDateStr(p: any): string | null {
+  if (p.payment_date) return p.payment_date
+  if (p.due_date) return p.due_date
+  if (p.month_label) {
+    const parsed = new Date(`1 ${p.month_label}`)
+    if (!isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10)
+  }
+  if (p.created_at) return String(p.created_at).slice(0, 10)
+  return null
+}
+function addMonthsToDateStr(dateStr: string, n: number): Date {
+  const d = new Date(dateStr + 'T00:00:00')
+  d.setMonth(d.getMonth() + n)
+  return d
+}
+function monthLabelOf(monthKey: string): string {
+  return new Date(monthKey + '-01T00:00:00').toLocaleString('en-IN', { month: 'long', year: 'numeric' })
+}
+
+function RevenueForecastReport({ students, subjects, payments, exportCSV }: any) {
+  const todayKey = new Date().toISOString().slice(0, 7)
+  const [monthKey, setMonthKey] = useState(todayKey)
+  const [showOverdueOnly, setShowOverdueOnly] = useState(false)
+
+  function shiftMonth(delta: number) {
+    const d = new Date(monthKey + '-01T00:00:00')
+    d.setMonth(d.getMonth() + delta)
+    const next = d.toISOString().slice(0, 7)
+    if (next >= todayKey) setMonthKey(next) // forecast looks forward only — past months are actuals, see Monthly Collection
+  }
+
+  const result = useMemo(() => {
+    const invoiced = payments.filter((p: any) => {
+      if (p.status === 'failed' || p.status === 'cancelled') return false
+      const anchor = paymentAnchorDateStr(p)
+      return anchor?.slice(0, 7) === monthKey
+    })
+    const invoicedTotal = invoiced.reduce((a: number, p: any) => a + (p.amount || 0), 0)
+    const invoicedKeys = new Set(invoiced.map((p: any) => `${p.student_id}|${p.subject_id}`))
+
+    // "Overdue as of today" is judged against the START of the current calendar
+    // month, not today's exact day-of-month — otherwise a student who pays on
+    // the 5th every month gets wrongly flagged overdue on the 6th. It's a fixed
+    // fact about the student, independent of which month is being viewed below.
+    const currentMonthStart = new Date(todayKey + '-01T00:00:00')
+    const projected: any[] = []
+
+    students
+      .filter((s: any) => (s.status || 'Active') === 'Active')
+      .forEach((student: any) => {
+        (student.student_subjects || []).forEach((ss: any) => {
+          const key = `${student.id}|${ss.subject_id}`
+          if (invoicedKeys.has(key)) return // already invoiced for this month — counted in `invoiced`, not a projection
+
+          const subjPayments = payments
+            .filter((p: any) => p.student_id === student.id && p.subject_id === ss.subject_id)
+            .map((p: any) => ({ p, anchor: paymentAnchorDateStr(p) }))
+            .filter((x: any) => x.anchor)
+            .sort((a: any, b: any) => b.anchor.localeCompare(a.anchor))
+          if (!subjPayments.length) return // no payment history for this enrollment — nothing to project from
+
+          const last = subjPayments[0].p
+          const cycleMonths = Number(last.months) > 0 ? Number(last.months) : 1
+
+          // Is this student currently overdue, as of today? (independent of monthKey)
+          let overdueCheck = addMonthsToDateStr(subjPayments[0].anchor, cycleMonths)
+          let cyclesOverdue = 0
+          while (overdueCheck < currentMonthStart) {
+            overdueCheck = addMonthsToDateStr(overdueCheck.toISOString().slice(0, 10), cycleMonths)
+            cyclesOverdue++
+          }
+
+          // Does their billing cycle land in the month currently being viewed?
+          let nextDue = addMonthsToDateStr(subjPayments[0].anchor, cycleMonths)
+          let nextDueKey = nextDue.toISOString().slice(0, 7)
+          while (nextDueKey < monthKey) {
+            nextDue = addMonthsToDateStr(nextDue.toISOString().slice(0, 10), cycleMonths)
+            nextDueKey = nextDue.toISOString().slice(0, 7)
+          }
+          if (nextDueKey !== monthKey) return // this student's cycle doesn't land in the viewed month at all
+
+          projected.push({
+            studentId: student.id,
+            studentName: student.full_name,
+            subjectName: subjects.find((s: any) => s.id === ss.subject_id)?.name || '—',
+            lastAmount: last.amount || 0,
+            lastDate: subjPayments[0].anchor,
+            cycleMonths,
+            cycleKnown: Number(last.months) > 0,
+            nextDue: nextDue.toISOString().slice(0, 10),
+            overdue: cyclesOverdue > 0,
+          })
+        })
+      })
+
+    const projectedTotal = projected.reduce((a, r) => a + r.lastAmount, 0)
+    return { invoiced, invoicedTotal, projected, projectedTotal, total: invoicedTotal + projectedTotal }
+  }, [students, subjects, payments, monthKey])
+
+  const rows = showOverdueOnly ? result.projected.filter((r: any) => r.overdue) : result.projected
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="font-semibold text-gray-900">Revenue Forecast</h2>
+        <button
+          onClick={() => exportCSV(
+            [
+              ...result.invoiced.map((p: any) => ({ Student: p.students?.full_name || p.student_name, Subject: p.subjects?.name || '', Type: 'Invoiced', Amount: p.amount, Status: p.status })),
+              ...result.projected.map((r: any) => ({ Student: r.studentName, Subject: r.subjectName, Type: r.overdue ? 'Projected (overdue)' : 'Projected', Amount: r.lastAmount, Status: `next due ${r.nextDue}` })),
+            ],
+            `revenue_forecast_${monthKey}.csv`
+          )}
+          className="btn btn-sm"
+        ><Download className="w-3 h-3" /> Export</button>
+      </div>
+
+      {/* Month nav */}
+      <div className="flex items-center gap-3 mb-5">
+        <button onClick={() => shiftMonth(-1)} disabled={monthKey <= todayKey} className="btn btn-sm disabled:opacity-30 disabled:cursor-not-allowed">‹</button>
+        <div className="text-sm font-semibold text-gray-800 w-40 text-center">{monthLabelOf(monthKey)}</div>
+        <button onClick={() => shiftMonth(1)} className="btn btn-sm">›</button>
+        {monthKey === todayKey && <span className="badge bg-brand-50 text-brand-600 ml-1">current month</span>}
+      </div>
+
+      <div className="grid grid-cols-4 gap-4 mb-5">
+        <div className="bg-emerald-50 rounded-xl p-4">
+          <div className="text-xs font-semibold uppercase tracking-wide text-emerald-600">Forecasted Revenue</div>
+          <div className="text-2xl font-bold mt-1 text-emerald-700">{fmt(result.total)}</div>
+        </div>
+        <div className="bg-blue-50 rounded-xl p-4">
+          <div className="text-xs font-semibold uppercase tracking-wide text-blue-600">Already Invoiced</div>
+          <div className="text-2xl font-bold mt-1 text-blue-700">{fmt(result.invoicedTotal)}</div>
+          <div className="text-xs text-blue-500 mt-0.5">{result.invoiced.length} invoice{result.invoiced.length!==1?'s':''}</div>
+        </div>
+        <div className="bg-violet-50 rounded-xl p-4">
+          <div className="text-xs font-semibold uppercase tracking-wide text-violet-600">Projected Renewals</div>
+          <div className="text-2xl font-bold mt-1 text-violet-700">{fmt(result.projectedTotal)}</div>
+          <div className="text-xs text-violet-500 mt-0.5">{result.projected.length} student{result.projected.length!==1?'s':''} not yet invoiced</div>
+        </div>
+        <button onClick={() => setShowOverdueOnly(v => !v)} className={clsx('rounded-xl p-4 text-left transition-colors', showOverdueOnly ? 'bg-amber-500 text-white' : 'bg-amber-50 text-amber-700 hover:bg-amber-100')}>
+          <div className="text-xs font-semibold uppercase tracking-wide opacity-80">Overdue Renewals</div>
+          <div className="text-2xl font-bold mt-1">{result.projected.filter((r: any) => r.overdue).length}</div>
+          <div className="text-xs opacity-70 mt-0.5">{showOverdueOnly ? 'showing only these' : 'click to filter'}</div>
+        </button>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead><tr>
+            <th className="th">Student</th><th className="th">Subject</th><th className="th">Last Paid</th>
+            <th className="th">Cycle</th><th className="th">Projected Due</th><th className="th">Projected Amount</th><th className="th">Confidence</th>
+          </tr></thead>
+          <tbody>
+            {rows.length === 0 && (
+              <tr><td className="td text-gray-400" colSpan={7}>
+                {result.projected.length === 0 ? 'No projected renewals for this month — everything due is already invoiced.' : 'No overdue renewals in this list.'}
+              </td></tr>
+            )}
+            {rows.map((r: any, i: number) => (
+              <tr key={i}>
+                <td className="td font-medium text-gray-800">{r.studentName}</td>
+                <td className="td">{r.subjectName}</td>
+                <td className="td text-gray-500">{r.lastDate} · {fmt(r.lastAmount)}</td>
+                <td className="td text-gray-500">{r.cycleMonths} mo</td>
+                <td className="td">{r.nextDue}</td>
+                <td className="td font-semibold">{fmt(r.lastAmount)}</td>
+                <td className="td">
+                  {r.overdue && <span className="badge bg-amber-100 text-amber-800 mr-1">overdue</span>}
+                  {!r.cycleKnown && <span className="badge bg-gray-100 text-gray-500">assumed monthly</span>}
+                  {r.cycleKnown && !r.overdue && <span className="badge bg-emerald-100 text-emerald-700">on cycle</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="text-xs text-gray-400 mt-4 border-t border-gray-100 pt-3 leading-relaxed">
+        <strong>How this is calculated:</strong> "Already Invoiced" sums every payment/invoice already raised for {monthLabelOf(monthKey)}.
+        "Projected Renewals" looks at every active student without an invoice yet for that month, takes their last payment's billing
+        cycle length (falls back to 1 month where that wasn't recorded), and rolls forward to their next expected due date at their
+        last payment's price. "Overdue" means they needed more than one cycle to catch up to today, so their actual renewal date is
+        less certain than the others.
+      </div>
+    </div>
+  )
+}
 
 function MonthlyBreakdownReport({ paidPayments, last12Months, monthlyCollection, totalYTD, totalMTD, fyLabel, exportCSV, MonthChart }: any) {
   const [selectedMonth, setSelectedMonth] = useState<string | null>(null)
