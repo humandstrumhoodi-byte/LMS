@@ -3027,20 +3027,130 @@ const CH_DAYS = ['Sun','Tue','Wed','Thu','Fri','Sat'] // Mon excluded — perman
 const CH_DAY_LABELS:Record<string,string> = { Sun:'Sunday', Tue:'Tuesday', Wed:'Wednesday', Thu:'Thursday', Fri:'Friday', Sat:'Saturday' }
 const CH_HOUR_OPTIONS = Array.from({length:15},(_,i)=>String(i+7).padStart(2,'0')+':00') // 07:00–21:00
 
-const HOW_TOS = [
-  { q: 'How do I enroll a new student?', a: 'Go to Students → Enroll Student. Fill in their name, contact details, and pick their instrument(s). If they have a sibling already enrolled, give them their own separate student profile — invoices and attendance are always tracked per student, not per family.' },
-  { q: 'How do I record a payment?', a: 'Go to Payments → Record Payment. Pick the student and subject, enter the amount, and save. A receipt email is sent automatically if a split payment marks something as paid.' },
-  { q: 'How do I split a bill into installments or payment methods?', a: 'In Record Payment, check "Split this bill". Enter the total bill amount, then add a row per installment — each with its own amount, payment method (Cash/UPI/Card), and status (Paid now / Pending). The remaining balance and due date are automatically included in the receipt email.' },
-  { q: 'How do I add a class to the schedule?', a: 'Go to Schedule → Week view, and click any empty time slot within your center\'s working hours. The Schedule Class form opens pre-filled with that day and time — just pick the instrument. You can click an already-occupied slot too, to add a second class taught by a different teacher at the same time.' },
-  { q: 'How do I add or remove a student from an existing class?', a: 'Click the class on the schedule grid — the popup that opens (used for sending reminders) also has "Add Another Student to This Class" with a search box, and each student in the Recipients list has a small trash icon to remove them.' },
-  { q: 'A schedule slot looks closed/striped and won\'t let me click it — why?', a: 'That means the slot falls outside your configured Center Hours. Ask your superadmin to review Center Hours if your actual operating hours are different.' },
-  { q: 'How does the pending-payment penalty/reminder system work?', a: 'Any payment marked Pending with a due date automatically enters the fine-reminder workflow — a daily job emails the student once the due date has passed, adding a 5% fee for every 15 days overdue, and repeats every 15 days until paid.' },
-  { q: 'Where do I see if a reminder/receipt was actually sent?', a: 'On the Students page, under each student\'s name, a small bell badge shows the most recent reminder or receipt sent, with the date — hover it for full details.' },
-  { q: 'Why do my Dashboard totals not match a drilldown popup?', a: 'If you ever see this, it usually means a card is summing two categories (like Pending + Overdue) but the popup behind it is only showing one — treat it as a bug and raise a ticket below.' },
+type HowTo = { q: string; a: string; category: string; keywords?: string[] }
+
+const HOW_TOS: HowTo[] = [
+  // ── Getting Started ─────────────────────────────────────────
+  { category: 'Getting Started', q: 'What can I do with my role?',
+    a: 'Superadmin sees and controls everything, including user roles and the audit log. Center Manager can manage students, teachers, subjects, schedule, fees, and payments, but can\'t change anyone\'s role. Teacher can view their own schedule and mark attendance for their own classes, but can\'t see payments or manage students/subjects. If a page looks empty or a button is missing, it\'s usually your role — ask a superadmin if you think you need more access.',
+    keywords: ['role','permission','access','rbac','superadmin','center manager','teacher account'] },
+  { category: 'Getting Started', q: 'What do the sidebar sections cover?',
+    a: 'Overview (dashboard summary), Students, Teachers, Subjects, Schedule (the class calendar), Payments (invoicing and collection), Reports (analytics across students/payments/attendance), Attendance, and Help & Support (this page). Center Hours and Users are visible to admins only.',
+    keywords: ['navigation','sidebar','tabs','menu'] },
+
+  // ── Students ─────────────────────────────────────────────────
+  { category: 'Students', q: 'How do I enroll a new student?',
+    a: 'Go to Students → Enroll Student. Fill in their name, contact details, and pick their instrument(s). If they have a sibling already enrolled, give them their own separate student profile — invoices and attendance are always tracked per student, not per family.',
+    keywords: ['enroll','new student','add student','sibling'] },
+  { category: 'Students', q: 'What do the different student statuses mean?',
+    a: 'Active (currently taking classes), Trial (evaluating before committing), Paid Break (temporarily paused but still billed, e.g. a reserved slot), Unpaid Break (paused, not billed), Inactive (no longer engaged, not formally dropped), Blocked (access restricted — e.g. unresolved dues), Dropped Off (formally discontinued). Reports → Students by Status and Inactive Students both read from this field.',
+    keywords: ['status','active','trial','inactive','blocked','dropped off','paid break'] },
+  { category: 'Students', q: 'How do I bulk-import students?',
+    a: 'Go to Students → Import, and upload a CSV. The importer maps common column headers automatically (name, email, phone, guardian details, etc.) — review the preview before confirming, since it inserts rows directly.',
+    keywords: ['import','csv','bulk upload','students'] },
+  { category: 'Students', q: 'How do I change which subjects a student is enrolled in?',
+    a: 'Open the student\'s profile → Enrolled Subjects → Manage. This controls which classes they can be added to and which subjects show up when raising an invoice for them — it does not automatically add or remove them from an already-scheduled class roster, which is managed separately from the Schedule grid.',
+    keywords: ['enrolled subjects','manage subjects','add subject to student'] },
+  { category: 'Students', q: 'What can students/parents see in the Student Portal?',
+    a: 'Students log in with an OTP (no password) at the separate /student URL. From there they can see their schedule, request a class reschedule, view invoices, and receive announcements/messages from the academy — the student portal is intentionally separate from the staff dashboard and doesn\'t use the same role-based access.',
+    keywords: ['student portal','parent login','otp','reschedule request'] },
+
+  // ── Schedule ─────────────────────────────────────────────────
+  { category: 'Schedule', q: 'How do I add a class to the schedule?',
+    a: 'Go to Schedule → Week view, and click any empty time slot within your center\'s working hours. The Schedule Class form opens pre-filled with that day and time — just pick the instrument. You can click an already-occupied slot too, to add a second class taught by a different teacher at the same time.',
+    keywords: ['add class','new class','schedule a class'] },
+  { category: 'Schedule', q: 'How do I add or remove a student from an existing class?',
+    a: 'Click the class on the schedule grid — the popup that opens (used for sending reminders) also has "Add Another Student to This Class" with a search box, and each student in the Recipients list has a small trash icon to remove them.',
+    keywords: ['add student to class','remove student from class','class roster'] },
+  { category: 'Schedule', q: 'A schedule slot looks closed/striped and won\'t let me click it — why?',
+    a: 'That means the slot falls outside your configured Center Hours. Ask your superadmin to review Center Hours if your actual operating hours are different. Note Monday is permanently closed and can\'t be changed from Center Hours.',
+    keywords: ['closed slot','striped','disabled slot','center hours'] },
+  { category: 'Schedule', q: 'How do reschedule requests from students work?',
+    a: 'A student requests a reschedule from the Student Portal. It shows up as a banner ("N reschedule requests awaiting review") at the top of the Schedule tab for Center Managers and Superadmins — teachers don\'t review these. Approving or rejecting it updates the class roster and notifies the student.',
+    keywords: ['reschedule request','approve reschedule','pending reschedule'] },
+
+  // ── Payments & Invoicing ────────────────────────────────────
+  { category: 'Payments & Invoicing', q: 'How do I record a payment?',
+    a: 'Go to Payments → Record Payment. Pick the student and subject, enter the amount, and save. A receipt email is sent automatically if a split payment marks something as paid.',
+    keywords: ['record payment','add payment','log payment'] },
+  { category: 'Payments & Invoicing', q: 'How do I split a bill into installments or payment methods?',
+    a: 'In Record Payment, check "Split this bill". Enter the total bill amount, then add a row per installment — each with its own amount, payment method (Cash/UPI/Card), and status (Paid now / Pending). The remaining balance and due date are automatically included in the receipt email.',
+    keywords: ['split payment','installment','partial payment'] },
+  { category: 'Payments & Invoicing', q: 'How is Raise Invoice different from Record Payment?',
+    a: 'Raise Invoice (Payments → 🧾 Raise Invoice) is for billing ahead of collection — pick a subject and optionally one of its packages (e.g. "8 Classes/Month · 3 Months"), and it drafts an invoice with a due date, which you can preview before saving as pending or already-paid. Record Payment is the simpler flow for logging money that\'s already been collected.',
+    keywords: ['raise invoice','package','invoice preview'] },
+  { category: 'Payments & Invoicing', q: 'How does the pending-payment penalty/reminder system work?',
+    a: 'Any payment marked Pending with a due date automatically enters the fine-reminder workflow — a daily job emails the student once the due date has passed, adding a 5% fee for every 15 days overdue, and repeats every 15 days until paid. Fines can be disabled per-payment if there\'s a genuine reason to waive them.',
+    keywords: ['fine','penalty','overdue','late fee','reminder'] },
+  { category: 'Payments & Invoicing', q: 'Where do I see if a reminder/receipt was actually sent?',
+    a: 'On the Students page, under each student\'s name, a small bell badge shows the most recent reminder or receipt sent, with the date — hover it for full details.',
+    keywords: ['reminder sent','receipt sent','email log'] },
+  { category: 'Payments & Invoicing', q: 'Can I edit or delete a past payment, and is that tracked?',
+    a: 'Yes — superadmins and center managers can edit historical payments and invoices. Every change is written to the audit log (visible on a student\'s profile, superadmin-only) so there\'s a record of who changed what and when. Deleting an invoice with linked installments requires deleting or reassigning those first.',
+    keywords: ['edit payment','delete invoice','audit log','billing history'] },
+
+  // ── Reports ──────────────────────────────────────────────────
+  { category: 'Reports', q: 'What\'s the difference between Student Reports and Payment Reports?',
+    a: 'Student Reports cover enrollment — status breakdown, inactive students, by instrument, by grade. Payment Reports cover money — Monthly Collection, Year to Date, Payment by Mode, Revenue by Subject, and Revenue Forecast. Both live under the Reports tab\'s left-hand navigation.',
+    keywords: ['reports tab','student reports','payment reports'] },
+  { category: 'Reports', q: 'How does the Revenue Forecast report work?',
+    a: 'It answers "what revenue should we expect this month" by adding together what\'s already invoiced for the month plus a projection for active students who haven\'t been re-invoiced yet. The projection takes each student\'s last payment, reads its billing-cycle length (defaults to monthly if that wasn\'t recorded), and rolls forward to their next expected due date at their last-paid amount. Students who needed more than one missed cycle to catch up to today are flagged "overdue" since their actual renewal date is less certain. Use the ‹ › arrows to view future months, and the Overdue Renewals card to filter to just those.',
+    keywords: ['revenue forecast','forecasted revenue','projected revenue','expected revenue','next month revenue'] },
+  { category: 'Reports', q: 'Why does a forecasted student show as "assumed monthly" instead of their real package length?',
+    a: 'The forecast reads the billing-cycle length from the payment\'s `months` field, which isn\'t always saved when an invoice is raised — when it\'s missing, the forecast defaults to a 1-month cycle rather than guessing wrong. If most of your revenue comes from 3- or 6-month packages, ask a superadmin whether the invoice form has been updated to always save the package length, since that directly improves this report\'s accuracy.',
+    keywords: ['assumed monthly','package length','forecast accuracy'] },
+
+  // ── Attendance ───────────────────────────────────────────────
+  { category: 'Attendance', q: 'How do I mark class attendance for students?',
+    a: 'From the class on the Schedule grid, or from the Attendance tab, mark each enrolled student Present, Absent (informed in advance — not billable), Absent Billable (no notice given — still billed), or Late. Teachers can mark attendance for their own classes; center managers and superadmins can mark or correct any class.',
+    keywords: ['mark attendance','present','absent','absent billable','late'] },
+  { category: 'Attendance', q: 'How does staff biometric attendance work?',
+    a: 'A fingerprint device (e.g. ZKTeco K40 Pro) pushes punch data straight to the app. An admin registers the device and maps each staff member\'s device PIN to their profile under Dashboard → Attendance (superadmin/center manager only). A nightly job turns the day\'s punches into a present/half-day/absent/late record per staff member, flagging anything unusual (a single punch, no punch at all) for manual review and correction — this is the attendance data a future payroll feature will read from.',
+    keywords: ['biometric','fingerprint','k40 pro','device','staff attendance','punch','zkteco'] },
+  { category: 'Attendance', q: 'A staff member\'s biometric punch didn\'t register — what do I do?',
+    a: 'Check Dashboard → Attendance → Devices to confirm the device shows a recent "Last seen" time — if it\'s stale, the device may be offline. If the device is fine but one person\'s punch is missing, use the Daily attendance tab\'s "Correct…" dropdown on their row to manually set the right status, with a reason — this is recorded as a manual override so the next nightly rollup won\'t overwrite it.',
+    keywords: ['missing punch','biometric not working','correct attendance','manual override'] },
+
+  // ── Staff & Access ───────────────────────────────────────────
+  { category: 'Staff & Access', q: 'How do I add a teacher account?',
+    a: 'Go to Teachers → Add Teacher (center managers and superadmins can do this). It creates both a login and a profile in one step — the new teacher gets an email to set their password.',
+    keywords: ['add teacher','new staff account','create login'] },
+  { category: 'Staff & Access', q: 'How do I change someone\'s role?',
+    a: 'Only a superadmin can change roles, from Users → pick the person → change role. Center managers can\'t promote anyone, including themselves.',
+    keywords: ['change role','promote','superadmin only','users tab'] },
+
+  // ── Settings ─────────────────────────────────────────────────
+  { category: 'Settings', q: 'How do I change the academy\'s operating hours?',
+    a: 'Superadmin/center manager: go to Center Hours, either apply one of the Quick Apply templates to every day or edit each day individually. Monday is permanently closed and can\'t be changed here. Changes apply immediately to the schedule calendar and every slot picker in the app.',
+    keywords: ['center hours','operating hours','opening hours'] },
+  { category: 'Settings', q: 'Why do my Dashboard totals not match a drilldown popup?',
+    a: 'If you ever see this, it usually means a card is summing two categories (like Pending + Overdue) but the popup behind it is only showing one — treat it as a bug and raise a ticket below.',
+    keywords: ['totals mismatch','wrong numbers','dashboard bug'] },
 ]
+
+// Simple, free, client-side "ask a question" search over HOW_TOS — no LLM
+// call, no API cost. Scores each entry by how many of the query's words
+// appear in its question/answer/keywords, with a large bonus when the
+// whole query appears verbatim in the question (the most confident kind
+// of match). Good enough for a fixed set of how-to articles; if this ever
+// needs to understand looser phrasing than word-overlap can catch, that's
+// the point to bring in a real LLM-backed search instead.
+const STOPWORDS = new Set(['a','an','the','is','are','do','does','how','i','to','for','of','in','on','my','can','what','why','when','where'])
+function tokenize(s: string): string[] {
+  return s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w && !STOPWORDS.has(w))
+}
+function scoreHowTo(h: HowTo, queryTokens: string[], rawQuery: string): number {
+  if (!queryTokens.length) return 0
+  const haystack = `${h.q} ${h.a} ${(h.keywords||[]).join(' ')}`.toLowerCase()
+  let score = 0
+  if (h.q.toLowerCase().includes(rawQuery.toLowerCase())) score += 10
+  queryTokens.forEach(t => { if (haystack.includes(t)) score += 1 })
+  return score
+}
 
 function HelpTab({profile}:any){
   const [openIdx,setOpenIdx]=useState<number|null>(0)
+  const [query,setQuery]=useState('')
   const [ticketOpen,setTicketOpen]=useState(false)
   const [subject,setSubject]=useState('')
   const [message,setMessage]=useState('')
@@ -3071,24 +3181,87 @@ function HelpTab({profile}:any){
     setSending(false)
   }
 
+  // Auto-expand the top match whenever the search results change, instead of
+  // leaving whatever was open from the browse view (or a previous search).
+  useEffect(() => { setOpenIdx(0) }, [query])
+
+  const queryTokens = useMemo(() => tokenize(query), [query])
+  const searchResults = useMemo(() => {
+    if (!queryTokens.length) return null
+    return HOW_TOS
+      .map(h => ({ h, score: scoreHowTo(h, queryTokens, query) }))
+      .filter(r => r.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .map(r => r.h)
+  }, [queryTokens, query])
+
+  const categories = Array.from(new Set(HOW_TOS.map(h => h.category)))
+
   return(
     <div className="max-w-3xl">
       <div className="flex items-center justify-between mb-5">
-        <div><h1 className="text-xl font-semibold text-gray-900">Help & Support</h1><p className="text-sm text-gray-400 mt-0.5">How-to guides and raising an issue</p></div>
+        <div><h1 className="text-xl font-semibold text-gray-900">Help & Support</h1><p className="text-sm text-gray-400 mt-0.5">Ask a question, or browse how-to guides by topic</p></div>
         <button className="btn-primary" onClick={()=>setTicketOpen(true)}><LifeBuoy className="w-4 h-4"/> Raise a Ticket</button>
       </div>
 
-      <div className="card divide-y divide-gray-100 mb-6">
-        {HOW_TOS.map((h,i)=>(
-          <div key={i}>
-            <button onClick={()=>setOpenIdx(openIdx===i?null:i)} className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-gray-50/50">
-              <span className="flex items-center gap-2 font-medium text-sm text-gray-800"><HelpCircle className="w-4 h-4 text-brand-400 flex-shrink-0"/>{h.q}</span>
-              <ChevronRight className={clsx('w-4 h-4 text-gray-300 transition-transform',openIdx===i&&'rotate-90')}/>
-            </button>
-            {openIdx===i&&<div className="px-4 pb-4 text-sm text-gray-500 pl-10">{h.a}</div>}
-          </div>
-        ))}
+      {/* Ask-a-question search — matches against every how-to article below, no page reload */}
+      <div className="relative mb-6">
+        <Search className="w-4 h-4 text-gray-300 absolute left-3.5 top-1/2 -translate-y-1/2" />
+        <input
+          className="input pl-10 py-3 text-sm"
+          placeholder="Ask a question — e.g. &quot;how do I split a payment&quot; or &quot;why is a student flagged overdue&quot;"
+          value={query}
+          onChange={e=>setQuery(e.target.value)}
+        />
+        {query && (
+          <button onClick={()=>setQuery('')} className="absolute right-3.5 top-1/2 -translate-y-1/2 text-gray-300 hover:text-gray-500">
+            <X className="w-4 h-4"/>
+          </button>
+        )}
       </div>
+
+      {searchResults ? (
+        <div className="card divide-y divide-gray-100 mb-6">
+          {searchResults.length === 0 ? (
+            <div className="px-4 py-10 text-center">
+              <div className="text-sm text-gray-500 mb-1">No matching answers for "{query}"</div>
+              <div className="text-xs text-gray-400 mb-3">Try different words, or raise a ticket and a real person will help.</div>
+              <button className="btn btn-sm" onClick={()=>setTicketOpen(true)}><LifeBuoy className="w-3.5 h-3.5"/> Raise a Ticket</button>
+            </div>
+          ) : searchResults.map((h,i)=>(
+            <div key={h.q}>
+              <button onClick={()=>setOpenIdx(openIdx===i?null:i)} className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-gray-50/50">
+                <span className="flex items-center gap-2 font-medium text-sm text-gray-800">
+                  <HelpCircle className="w-4 h-4 text-brand-400 flex-shrink-0"/>{h.q}
+                  <span className="badge bg-gray-100 text-gray-400 text-[10px]">{h.category}</span>
+                </span>
+                <ChevronRight className={clsx('w-4 h-4 text-gray-300 transition-transform flex-shrink-0',openIdx===i&&'rotate-90')}/>
+              </button>
+              {openIdx===i&&<div className="px-4 pb-4 text-sm text-gray-500 pl-10">{h.a}</div>}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="space-y-5 mb-6">
+          {categories.map(cat => (
+            <div key={cat} className="card divide-y divide-gray-100">
+              <div className="px-4 py-2.5 text-xs font-semibold text-gray-400 uppercase tracking-wider bg-gray-50/60">{cat}</div>
+              {HOW_TOS.filter(h => h.category === cat).map((h,i)=>{
+                const idx = HOW_TOS.indexOf(h)
+                return (
+                  <div key={h.q}>
+                    <button onClick={()=>setOpenIdx(openIdx===idx?null:idx)} className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-gray-50/50">
+                      <span className="flex items-center gap-2 font-medium text-sm text-gray-800"><HelpCircle className="w-4 h-4 text-brand-400 flex-shrink-0"/>{h.q}</span>
+                      <ChevronRight className={clsx('w-4 h-4 text-gray-300 transition-transform flex-shrink-0',openIdx===idx&&'rotate-90')}/>
+                    </button>
+                    {openIdx===idx&&<div className="px-4 pb-4 text-sm text-gray-500 pl-10">{h.a}</div>}
+                  </div>
+                )
+              })}
+            </div>
+          ))}
+        </div>
+      )}
 
       {ticketOpen&&(
         <Modal open={ticketOpen} onClose={()=>{setTicketOpen(false);setSent(false)}} title="Raise a Support Ticket">
