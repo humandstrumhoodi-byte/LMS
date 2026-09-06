@@ -2542,7 +2542,13 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
   const [busy,setBusy]=useState(false);const [importResult,setImportResult]=useState('');const [q,setQ]=useState('')
   const months=Array.from({length:12},(_,i)=>{const d=new Date();d.setMonth(d.getMonth()-i);return d.toLocaleString('en-IN',{month:'long',year:'numeric'})})
   const filtered=(tab==='all'?payments:payments.filter((p:any)=>p.status===tab)).filter((p:any)=>{const name=(p.students?.full_name||p.student_name||'').toLowerCase();return name.includes(q.toLowerCase())||p.receipt_number?.includes(q)||p.invoice_number?.includes(q)})
-  const paid=payments.filter((p:any)=>p.status==='paid').reduce((a:number,p:any)=>a+p.amount,0)
+  // Financial year (1 Apr – 31 Mar) — matches the Dashboard's "Collected {FY}" tile,
+  // so this "Collected" card no longer silently means "all-time" while looking like YTD.
+  const today=new Date()
+  const fyStartYear=today.getMonth()>=3?today.getFullYear():today.getFullYear()-1
+  const fyLabel=`FY ${fyStartYear}-${String(fyStartYear+1).slice(2)}`
+  const fyStartStr=`${fyStartYear}-04-01`
+  const paid=payments.filter((p:any)=>p.status==='paid'&&p.payment_date&&p.payment_date>=fyStartStr).reduce((a:number,p:any)=>a+p.amount,0)
   const pending=payments.filter((p:any)=>p.status==='pending').reduce((a:number,p:any)=>a+p.amount,0)
   const failed=payments.filter((p:any)=>p.status==='failed').length
 
@@ -2748,7 +2754,7 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
         {importResult}
       </div>}
       <div className="grid grid-cols-5 gap-4 mb-5">
-        <div className="card p-4 bg-emerald-50 border-emerald-100"><div className="text-xs text-emerald-600 mb-1">Collected</div><div className="text-xl font-semibold text-emerald-700">{fmt(paid)}</div></div>
+        <div className="card p-4 bg-emerald-50 border-emerald-100"><div className="text-xs text-emerald-600 mb-1">Collected {fyLabel}</div><div className="text-xl font-semibold text-emerald-700">{fmt(paid)}</div></div>
         <div className="card p-4 bg-amber-50 border-amber-100"><div className="text-xs text-amber-600 mb-1">Pending</div><div className="text-xl font-semibold text-amber-700">{fmt(pending)}</div></div>
         <div className="card p-4 bg-rose-50 border-rose-100"><div className="text-xs text-rose-600 mb-1">Fines Outstanding</div><div className="text-xl font-semibold text-rose-700">{fmt(totalFinesOutstanding)}</div></div>
         <div className="card p-4 bg-red-50 border-red-100"><div className="text-xs text-red-500 mb-1">Failed Txns</div><div className="text-xl font-semibold text-red-600">{failed}</div></div>
