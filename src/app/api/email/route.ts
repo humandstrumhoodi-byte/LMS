@@ -131,7 +131,7 @@ export async function POST(req: NextRequest) {
 
     const { invoiceNo, subjectName, pkgName, monthLabel, rawAmount, discountAmt, finalAmount,
       issueDate, dueDate, status, notes, upiId, academyName, academyAddress, academyPhone,
-      studentPhone, studentIdExt, lineItems } = invoiceData
+      studentPhone, studentIdExt, lineItems, slotGraceUntil } = invoiceData
 
     // Multi-line (combined) invoice support — falls back to the original single-row
     // rendering when lineItems isn't provided, so existing single-subject callers
@@ -215,6 +215,13 @@ export async function POST(req: NextRequest) {
             <span style="color:rgba(255,255,255,0.75);font-size:13px;font-weight:500">Total ${status==='paid'?'Paid':'Amount Due'}</span>
             <span style="color:white;font-size:24px;font-weight:700">₹${Number(finalAmount).toLocaleString('en-IN')}</span>
           </div>
+
+          ${status !== 'paid' && slotGraceUntil ? `
+          <!-- Slot grace-period notice -->
+          <div style="border:1px solid #fecaca;border-radius:10px;padding:12px 16px;margin-bottom:16px;background:#fef2f2">
+            <div style="font-size:13px;color:#991b1b;font-weight:700;margin-bottom:4px">⏳ Class slot held until ${slotGraceUntil}</div>
+            <div style="font-size:12px;color:#7f1d1d">Your class time is reserved for you until <strong>${slotGraceUntil}</strong>. If this invoice isn't paid by then, the slot will be released for other students — this applies even if a late fee is paid afterward, so please settle this invoice before the hold expires.</div>
+          </div>` : ''}
 
           ${status !== 'paid' ? `
           <!-- Pay now section with QR -->

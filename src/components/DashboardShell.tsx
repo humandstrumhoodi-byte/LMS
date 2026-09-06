@@ -325,6 +325,7 @@ function DashboardShellInner({profile}:{profile:Profile}){
   const [packages,setPackages]=useState<any[]>([])
   const [subjectTeachers,setSubjectTeachers]=useState<any[]>([])
   const [attendance,setAttendance]=useState<any[]>([])
+  const [slotHolds,setSlotHolds]=useState<any[]>([])
 
   const load=useCallback(async()=>{
     try{
@@ -359,6 +360,11 @@ function DashboardShellInner({profile}:{profile:Profile}){
       const att = await client.from('attendance').select('*, students(full_name), class_schedules(day_of_week,start_time,subjects(name))').order('class_date',{ascending:false}).limit(500)
       if (att.error) console.warn('[attendance] query failed (table may not exist yet — run add_attendance.sql):', att.error)
       setAttendance(att.data||[])
+
+      // Invoice-gated slot holds — table may not exist if add_slot_holds.sql hasn't run
+      const sh = await client.from('student_slot_holds').select('*, students(full_name)').eq('status','held')
+      if (sh.error) console.warn('[student_slot_holds] query failed (table may not exist yet — run add_slot_holds.sql):', sh.error)
+      setSlotHolds(sh.data||[])
     }catch(e){console.error('[LMS load error]',e)}
   },[])
 
@@ -417,12 +423,12 @@ function DashboardShellInner({profile}:{profile:Profile}){
       <main className="flex-1 overflow-y-auto bg-gray-50">
         <div className="max-w-6xl mx-auto px-6 py-6">
           {tab==='home'&&<HomeTab profile={profile} perms={perms} students={students} profiles={profiles} payments={payments} schedules={schedules} subjects={subjects} leads={leads} setTab={setTab}/>}
-          {tab==='students'&&<StudentsTab students={students} subjects={subjects} packages={packages} fees={fees} schedules={schedules} payments={payments} profile={profile} reload={load}/>}
+          {tab==='students'&&<StudentsTab students={students} subjects={subjects} packages={packages} fees={fees} schedules={schedules} payments={payments} slotHolds={slotHolds} profile={profile} reload={load}/>}
           {tab==='leads'&&<LeadsTab leads={leads} subjects={subjects} reload={load}/>}
           {tab==='teachers'&&<TeachersTab profiles={profiles} subjects={subjects} reload={load}/>}
           {tab==='subjects'&&<SubjectsTab subjects={subjects} profiles={profiles} students={students} fees={fees} subjectTeachers={subjectTeachers} reload={load}/>}
           {tab==='packages'&&<PackagesTab packages={packages} subjects={subjects} reload={load}/>}
-          {tab==='schedule'&&<ScheduleTab schedules={schedules} subjects={subjects} students={students} profiles={profiles} profile={profile} perms={perms} reload={load}/>}
+          {tab==='schedule'&&<ScheduleTab schedules={schedules} subjects={subjects} students={students} profiles={profiles} profile={profile} perms={perms} slotHolds={slotHolds} reload={load}/>}
           {tab==='fees'&&<FeesTab subjects={subjects} fees={fees} reload={load}/>}
           {tab==='payments'&&<PaymentsTab payments={payments} students={students} subjects={subjects} fees={fees} perms={perms} reload={load}/>}
           {tab==='reports'&&<ReportsTab students={students} subjects={subjects} payments={payments} profiles={profiles} attendance={attendance} reload={load}/>}
@@ -775,7 +781,7 @@ function HomeTab({profile,perms,students,profiles,payments,schedules,subjects,le
 }
 
 // ══════════════════════════════════════════════════════════════ STUDENTS
-function StudentsTab({students,subjects,packages,fees,schedules,payments,profile,reload}:any){
+function StudentsTab({students,subjects,packages,fees,schedules,payments,slotHolds,profile,reload}:any){
   // Most recent reminder/receipt email sent per student, for the notification badge below.
   const lastReminderByStudent = useMemo(()=>{
     const map: Record<string,{date:string,kind:'receipt'|'fine'}> = {}
@@ -905,6 +911,8 @@ function StudentsTab({students,subjects,packages,fees,schedules,payments,profile
         subjects={subjects}
         packages={packages}
         schedules={schedules||[]}
+        payments={payments||[]}
+        slotHolds={slotHolds||[]}
         onClose={()=>{setEnrollOpen(false);setEditing(null)}}
         reload={reload}
       />}
@@ -1792,7 +1800,7 @@ function renderMonthView(p:any){
 }
 
 
-function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}:any){
+function ScheduleTab({schedules,subjects,students,profiles,profile,perms,slotHolds,reload}:any){
   const supabase=sb()
   const isTeacher=profile.role==='teacher'
 
@@ -1998,6 +2006,31 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
               <button onClick={()=>{setReviewModal(r);setReviewNote('')}} className="btn btn-sm text-brand-600 border-brand-200 hover:bg-brand-50">Review</button>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Slots on hold (pending payment) banner */}
+      {!isTeacher&&(slotHolds||[]).length>0&&(
+        <div className="card mb-4 border-orange-200 overflow-hidden">
+          <div className="px-4 py-3 bg-orange-50 border-b border-orange-100 flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-orange-500"/>
+            <span className="text-sm font-semibold text-orange-800">{(slotHolds||[]).length} slot{(slotHolds||[]).length!==1?'s':''} on hold — reserved pending payment</span>
+          </div>
+          {(slotHolds||[]).map((h:any)=>{
+            const subj=subjects.find((s:any)=>s.id===h.subject_id)
+            return(
+              <div key={h.id} className="flex items-center justify-between px-4 py-3 border-b border-gray-50 last:border-0">
+                <div className="flex items-center gap-3">
+                  <div className={clsx('w-9 h-9 rounded-full flex items-center justify-center text-xs font-semibold flex-shrink-0',ac(0))}>{ini(h.students?.full_name||'?')}</div>
+                  <div>
+                    <div className="text-sm font-medium text-gray-900">{h.students?.full_name||'Student'}</div>
+                    <div className="text-xs text-gray-400">{subj?.name} · {h.day_of_week} {h.start_time?.slice(0,5)} · held until <strong className="text-orange-600">{h.grace_until}</strong></div>
+                  </div>
+                </div>
+                <button onClick={async()=>{await supabase.from('student_slot_holds').update({status:'cancelled'}).eq('id',h.id);reload()}} className="btn btn-sm text-gray-500 hover:bg-gray-50">Release now</button>
+              </div>
+            )
+          })}
         </div>
       )}
 
@@ -2240,26 +2273,30 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
                   {daySlots.map(t=>{
                     // No cap on how many classes (of this or any instrument) can share a
                     // slot — "booked" is shown only as information (another class already
-                    // runs here), never as a block. Only a deliberately Blocked slot
-                    // (Center Hours / faculty unavailability) stays non-selectable.
+                    // runs here), never as a block. Excluded: a deliberately Blocked slot
+                    // (Center Hours / faculty unavailability), and a slot actively held for
+                    // a student's pending invoice payment (see student_slot_holds).
                     const isBooked=bookedSlots.includes(t)
                     const hasConflict=conflictSlots.includes(t)
                     const isBlockedSlot=blockedForDay.includes(t)
+                    const heldByOthers=activeHoldsForSlot(slotHolds,form.subject_id,form.day_of_week,t)
+                    const isHeld=heldByOthers.length>0
                     const isSelected=form.start_time===t
-                    const disabled=isBlockedSlot
+                    const disabled=isBlockedSlot||isHeld
                     const blockedInfo=blockedSlots.find((b:any)=>b.day_of_week===form.day_of_week&&b.start_time?.slice(0,5)===t)
                     return(
                       <button key={t} type="button"
                         onClick={()=>!disabled&&setForm((f:any)=>({...f,start_time:t}))}
-                        title={isBlockedSlot?`Blocked${blockedInfo?.reason?': '+blockedInfo.reason:''}`:isBooked?'Another class for this instrument is already here — you can still add this one':''}
+                        title={isBlockedSlot?`Blocked${blockedInfo?.reason?': '+blockedInfo.reason:''}`:isHeld?`Reserved for ${heldByOthers[0].students?.full_name||'a student'}'s pending payment until ${heldByOthers[0].grace_until}`:isBooked?'Another class for this instrument is already here — you can still add this one':''}
                         className={clsx('px-2.5 py-1 rounded-lg text-xs font-mono font-medium border transition-all',
                           isBlockedSlot?'bg-gray-100 text-gray-300 border-gray-100 cursor-not-allowed':
+                          isHeld?'bg-orange-50 text-orange-400 border-orange-100 cursor-not-allowed':
                           isSelected?'bg-brand-500 text-white border-brand-500':
                           isBooked?'bg-red-50 text-red-600 border-red-100 hover:bg-red-100 cursor-pointer':
                           hasConflict?'bg-amber-50 text-amber-600 border-amber-100 hover:bg-amber-100 cursor-pointer':
                           'bg-emerald-50 text-emerald-700 border-emerald-100 hover:bg-emerald-100 cursor-pointer'
                         )}>
-                        {isBlockedSlot?'🚫 ':''}{t}
+                        {isBlockedSlot?'🚫 ':isHeld?'⏳ ':''}{t}
                       </button>
                     )
                   })}
@@ -2268,6 +2305,7 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
                   <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-emerald-100 inline-block"/>Free</span>
                   <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-amber-100 inline-block"/>Other class</span>
                   <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-red-100 inline-block"/>Same instrument already here — still bookable</span>
+                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-orange-100 inline-block"/>⏳ Held (pending payment)</span>
                   <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-gray-100 inline-block"/>🚫 Blocked</span>
                 </div>
               </div>
@@ -2606,7 +2644,12 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
     setOpen(true)
   }
 
-  async function markPaid(id:string){await supabase.from('payments').update({status:'paid',payment_date:new Date().toISOString().slice(0,10)}).eq('id',id);reload()}
+  async function markPaid(id:string){
+    await supabase.from('payments').update({status:'paid',payment_date:new Date().toISOString().slice(0,10)}).eq('id',id)
+    const studentId=payments.find((p:any)=>p.id===id)?.student_id
+    if(studentId) await convertHeldSlots(supabase,studentId)
+    reload()
+  }
 
   async function deletePayment(id:string){
     if(!confirm('Delete this payment record? This cannot be undone.'))return
@@ -3076,8 +3119,11 @@ const HOW_TOS: HowTo[] = [
     a: 'That means the slot falls outside your configured Center Hours. Ask your superadmin to review Center Hours if your actual operating hours are different. Note Monday is permanently closed and can\'t be changed from Center Hours.',
     keywords: ['closed slot','striped','disabled slot','center hours'] },
   { category: 'Schedule', q: 'How do reschedule requests from students work?',
-    a: 'A student requests a reschedule from the Student Portal. It shows up as a banner ("N reschedule requests awaiting review") at the top of the Schedule tab for Center Managers and Superadmins — teachers don\'t review these. Approving or rejecting it updates the class roster and notifies the student.',
-    keywords: ['reschedule request','approve reschedule','pending reschedule'] },
+    a: 'A student requests a reschedule from the Student Portal. It shows up as a banner ("N reschedule requests awaiting review") at the top of the Schedule tab for Center Managers and Superadmins — teachers don\'t review these. Approving or rejecting it updates the class roster and notifies the student. Each enrollment gets one reschedule only, and it requires the student\'s current invoice for that class to be marked paid — the portal shows an error otherwise.',
+    keywords: ['reschedule request','approve reschedule','pending reschedule','one-time reschedule'] },
+  { category: 'Schedule', q: 'Why is a slot shown as "Held (pending payment)" and I can\'t pick it?',
+    a: 'When a student is enrolled with a package/invoice that isn\'t marked Paid yet, their picked class slot(s) aren\'t scheduled immediately — they\'re held exclusively for that student for 15 days from the invoice date. No one else can book that slot during the hold. Once the invoice is marked Paid (from Payments or the student\'s billing history), the held slot is automatically turned into a real class. If it stays unpaid past 15 days, the hold expires and the slot opens up for anyone — a "Slots on hold" banner at the top of the Schedule tab lists all current holds and lets an admin release one early.',
+    keywords: ['held slot','slot hold','pending payment slot','grace period','reserved slot'] },
 
   // ── Payments & Invoicing ────────────────────────────────────
   { category: 'Payments & Invoicing', q: 'How do I record a payment?',
@@ -4109,6 +4155,7 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
         field_changes: { status: { old: p.status, new: 'paid' }, payment_date: { old: p.payment_date || null, new: today } },
         reason: 'Marked paid (quick action)',
       })
+      await convertHeldSlots(supabase, student.id)
       reload()
     } else {
       alert(error.message)
@@ -4179,6 +4226,7 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
       description: `${baseDescription} (Split 1/${totalParts}: ${firstPart.mode})`,
     }).eq('id', splitTarget.id)
     if (updErr) { alert(updErr.message); setSplitBusy(false); return }
+    await convertHeldSlots(supabase, splitTarget.student_id)
 
     const additionalRows = [
       ...restParts.map((pt, i) => ({
@@ -6297,6 +6345,79 @@ function collapseInvoices(payments: any[]): { anchor: string; amount: number; mo
   return invoices
 }
 
+// ══════════════════════════════════════════════════════════════
+// INVOICE-GATED SLOT SCHEDULING — shared helpers
+// Used by EnrollmentModal (and the slot pickers) to decide whether a
+// student's picked class slot(s) can be committed now, or must be held
+// (reserved for them only) pending payment. See supabase/add_slot_holds.sql.
+// ══════════════════════════════════════════════════════════════
+const SLOT_HOLD_GRACE_DAYS = 15
+
+function addDaysToDateStr(dateStr: string, days: number): string {
+  const d = new Date(dateStr + 'T00:00:00')
+  d.setDate(d.getDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+
+// A package's classes-per-month rate maps to how many weekly recurring
+// slots the student needs for that one subject (a once-a-week class yields
+// ~4 classes/month, so 8/month ≈ 2 weekly slots, 12/month ≈ 3).
+function slotsRequiredForPackage(pkg: any): number {
+  if (!pkg?.classes_pm) return 1
+  return Math.max(1, Math.round(pkg.classes_pm / 4))
+}
+
+// Is this student's most recent PAID invoice for this subject currently
+// covering `todayStr`? Reuses the same billing-cycle math as the Revenue
+// Forecast report (coverage runs [anchor, anchor+months−1 day]).
+function isSubjectPaidNow(studentId: string, subjectId: string, payments: any[], todayStr: string): boolean {
+  const paidForSubject = (payments || []).filter((p: any) => p.student_id === studentId && p.subject_id === subjectId && p.status === 'paid')
+  const invoices = collapseInvoices(paidForSubject).sort((a, b) => b.anchor.localeCompare(a.anchor))
+  const latest = invoices[0]
+  if (!latest) return false
+  const end = coverageEndDate(latest.anchor, latest.months)
+  return latest.anchor <= todayStr && end.toISOString().slice(0, 10) >= todayStr
+}
+
+// Active (unexpired, not-yet-converted) holds for a subject/day/time,
+// optionally excluding one student (so a student sees their own hold as
+// selected rather than "reserved by someone else").
+function activeHoldsForSlot(slotHolds: any[], subjectId: string, day: string, time: string, excludeStudentId?: string): any[] {
+  const todayStr = new Date().toISOString().slice(0, 10)
+  return (slotHolds || []).filter((h: any) =>
+    h.status === 'held' && h.subject_id === subjectId && h.day_of_week === day &&
+    h.start_time?.slice(0, 5) === time && h.grace_until >= todayStr &&
+    (!excludeStudentId || h.student_id !== excludeStudentId)
+  )
+}
+
+// Convert any of this student's still-active holds into real class slots —
+// call this right after a payment for them is marked 'paid'.
+async function convertHeldSlots(supabase: any, studentId: string) {
+  const todayStr = new Date().toISOString().slice(0, 10)
+  const { data: holds } = await supabase.from('student_slot_holds').select('*')
+    .eq('student_id', studentId).eq('status', 'held').gte('grace_until', todayStr)
+  if (!holds?.length) return
+  for (const hold of holds) {
+    const { data: existing } = await supabase.from('class_schedules').select('id')
+      .eq('subject_id', hold.subject_id).eq('day_of_week', hold.day_of_week).eq('start_time', hold.start_time).maybeSingle()
+    let scheduleId = existing?.id
+    if (!scheduleId) {
+      const { data: created } = await supabase.from('class_schedules')
+        .insert({ subject_id: hold.subject_id, day_of_week: hold.day_of_week, start_time: hold.start_time, duration_minutes: 60 })
+        .select().single()
+      scheduleId = created?.id
+    }
+    if (scheduleId) {
+      await supabase.from('schedule_students').upsert(
+        { schedule_id: scheduleId, student_id: studentId },
+        { onConflict: 'schedule_id,student_id', ignoreDuplicates: true }
+      )
+      await supabase.from('student_slot_holds').update({ status: 'converted', converted_schedule_id: scheduleId }).eq('id', hold.id)
+    }
+  }
+}
+
 function RevenueForecastReport({ students, subjects, payments, exportCSV }: any) {
   const todayKey = new Date().toISOString().slice(0, 7)
   const [monthKey, setMonthKey] = useState(todayKey)
@@ -6995,7 +7116,7 @@ function AttendanceTab({ schedules, subjects, students, profiles, profile, atten
 const ENROLLMENT_STEPS = ['Personal','Guardian & Medical','Instrument & Package','Invoice'] as const
 type EnrollStep = typeof ENROLLMENT_STEPS[number]
 
-function EnrollmentModal({ student, subjects, packages, schedules, onClose, reload }: any) {
+function EnrollmentModal({ student, subjects, packages, schedules, payments, slotHolds, onClose, reload }: any) {
   const [blockedSlots, setBlockedSlots] = useState<any[]>([])
   const [centerHours, setCenterHours] = useState<any[]>([])
   useEffect(() => {
@@ -7054,20 +7175,21 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
     // Instrument
     subject_ids:            (student?.student_subjects||[]).map((x:any)=>x.subject_id) as string[],
     grade_level:            'Beginner–Grade 2',
-    // Pre-populate each already-enrolled subject's current class slot (if any), so editing
-    // an existing student shows their current day/time instead of a blank picker.
+    // Pre-populate each already-enrolled subject's current class slot(s) (if any), so editing
+    // an existing student shows their current day/time instead of a blank picker. A subject
+    // can have more than one weekly slot (higher-tier packages), so this is an array per subject.
     enroll_slots:           (()=>{
-      const initial: Record<string,{day:string,time:string}> = {}
+      const initial: Record<string,{day:string,time:string}[]> = {}
       if (student?.id) {
         (student?.student_subjects||[]).forEach((ss:any)=>{
-          const sched = (schedules||[]).find((sc:any) =>
+          const scheds = (schedules||[]).filter((sc:any) =>
             sc.subject_id === ss.subject_id && (sc.schedule_students||[]).some((s2:any)=>s2.student_id===student.id)
           )
-          if (sched) initial[ss.subject_id] = { day: sched.day_of_week, time: sched.start_time?.slice(0,5) }
+          if (scheds.length) initial[ss.subject_id] = scheds.map((sched:any) => ({ day: sched.day_of_week, time: sched.start_time?.slice(0,5) }))
         })
       }
       return initial
-    })() as Record<string,{day:string,time:string}>,
+    })() as Record<string,{day:string,time:string}[]>,
     // Invoice — per-instrument so a combined invoice can cover every selected subject
     package_ids:            {} as Record<string,string>,
     invoice_amounts:        {} as Record<string,string>,
@@ -7139,57 +7261,83 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
       )
     }
 
-    // Fully removed instruments — take them off that instrument's class roster entirely
+    // Fully removed instruments — take them off that instrument's class roster entirely,
+    // and cancel any still-pending slot holds for them too.
     if (removedSubjectIds.length) {
       const removedSchedIds = (schedules||[]).filter((sc:any)=>removedSubjectIds.includes(sc.subject_id)).map((sc:any)=>sc.id)
       if (removedSchedIds.length) {
         await supabase.from('schedule_students').delete().eq('student_id', sid).in('schedule_id', removedSchedIds)
       }
+      await supabase.from('student_slot_holds').update({ status: 'cancelled' })
+        .eq('student_id', sid).eq('status', 'held').in('subject_id', removedSubjectIds)
     }
 
-    // Book/move a class slot for each selected instrument that has one chosen
-    for (const subjectId of p.subject_ids) {
-      const slot = p.enroll_slots[subjectId]
-      if (!slot?.day || !slot?.time) continue
+    // Actual class-slot booking is decided on the Invoice step (see saveAndSendInvoice),
+    // since whether a picked slot gets scheduled now or held pending payment depends on
+    // the invoice status chosen there.
+    setBusy(false)
+    setStep('Invoice')
+  }
 
-      // If they're currently in a DIFFERENT schedule for this same subject, that's a slot change —
-      // remove the stale membership so they don't end up in two classes for one instrument.
-      const oldSchedIdsForSubject = (schedules||[])
-        .filter((sc:any)=>sc.subject_id===subjectId && (sc.schedule_students||[]).some((ss:any)=>ss.student_id===sid))
-        .map((sc:any)=>sc.id)
+  // Commit (or hold, pending payment) the slot(s) picked for one subject. Called from
+  // saveAndSendInvoice once the invoice — and therefore its paid/pending status — is known.
+  // Returns true if this subject's slots ended up held rather than scheduled.
+  async function commitOrHoldSubjectSlots(subjectId: string, sid: string, invoiceNo: string, graceUntil: string): Promise<boolean> {
+    const requestedSlots: {day:string,time:string}[] = (p.enroll_slots[subjectId] || []).filter((s:any)=>s?.day && s?.time)
+    if (!requestedSlots.length) return false
 
-      const { data: conflict } = await supabase
-        .from('class_schedules')
-        .select('id')
-        .eq('subject_id', subjectId)
-        .eq('day_of_week', slot.day)
-        .eq('start_time', slot.time)
-        .maybeSingle()
+    const li = lineItems.find((x:any) => x.subjectId === subjectId)
+    const hasBillableLine = !!(li && li.amount > 0)
 
-      let scheduleId = conflict?.id
-      if (!scheduleId) {
-        const { data: newCls } = await supabase
-          .from('class_schedules')
-          .insert({ subject_id: subjectId, day_of_week: slot.day, start_time: slot.time, duration_minutes: 60 })
-          .select()
-          .single()
-        scheduleId = newCls?.id
-      }
+    // Slot(s) this student is ALREADY actually scheduled into for this subject (real,
+    // previously-committed classes) — if the request matches exactly, there's nothing to do.
+    const currentScheds = (schedules||[]).filter((sc:any)=>sc.subject_id===subjectId && (sc.schedule_students||[]).some((ss:any)=>ss.student_id===sid))
+    const currentKeys = new Set(currentScheds.map((sc:any)=>`${sc.day_of_week}|${sc.start_time?.slice(0,5)}`))
+    const requestedKeys = new Set(requestedSlots.map(s=>`${s.day}|${s.time}`))
+    const unchanged = currentKeys.size === requestedKeys.size && Array.from(requestedKeys).every(k=>currentKeys.has(k))
+    if (unchanged) return false
 
-      const staleSchedIds = oldSchedIdsForSubject.filter((id:string) => id !== scheduleId)
+    const shouldCommitNow = !hasBillableLine || p.invoice_status === 'paid'
+
+    if (shouldCommitNow) {
+      const staleSchedIds = currentScheds.filter((sc:any)=>!requestedKeys.has(`${sc.day_of_week}|${sc.start_time?.slice(0,5)}`)).map((sc:any)=>sc.id)
       if (staleSchedIds.length) {
         await supabase.from('schedule_students').delete().eq('student_id', sid).in('schedule_id', staleSchedIds)
       }
-      if (scheduleId) {
-        await supabase.from('schedule_students').upsert(
-          { schedule_id: scheduleId, student_id: sid },
-          { onConflict: 'schedule_id,student_id', ignoreDuplicates: true }
-        )
+      for (const slot of requestedSlots) {
+        const { data: conflict } = await supabase.from('class_schedules').select('id')
+          .eq('subject_id', subjectId).eq('day_of_week', slot.day).eq('start_time', slot.time).maybeSingle()
+        let scheduleId = conflict?.id
+        if (!scheduleId) {
+          const { data: newCls } = await supabase.from('class_schedules')
+            .insert({ subject_id: subjectId, day_of_week: slot.day, start_time: slot.time, duration_minutes: 60 })
+            .select().single()
+          scheduleId = newCls?.id
+        }
+        if (scheduleId) {
+          await supabase.from('schedule_students').upsert(
+            { schedule_id: scheduleId, student_id: sid },
+            { onConflict: 'schedule_id,student_id', ignoreDuplicates: true }
+          )
+        }
       }
+      // This subject is now actually scheduled — any earlier pending hold for it is moot.
+      await supabase.from('student_slot_holds').update({ status: 'cancelled' })
+        .eq('student_id', sid).eq('subject_id', subjectId).eq('status', 'held')
+      return false
+    } else {
+      // Invoice is pending — reserve the requested slot(s) for this student only, for the
+      // grace period, instead of scheduling them. Superseding any prior pending hold.
+      await supabase.from('student_slot_holds').delete().eq('student_id', sid).eq('subject_id', subjectId).eq('status', 'held')
+      const today = new Date().toISOString().slice(0,10)
+      await supabase.from('student_slot_holds').insert(
+        requestedSlots.map((slot, i) => ({
+          student_id: sid, subject_id: subjectId, day_of_week: slot.day, start_time: slot.time,
+          slot_index: i+1, invoice_number: invoiceNo, held_at: today, grace_until: graceUntil, status: 'held',
+        }))
+      )
+      return true
     }
-
-    setBusy(false)
-    setStep('Invoice')
   }
 
   async function saveAndSendInvoice(sendEmail: boolean) {
@@ -7226,6 +7374,16 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
       await supabase.from('payments').insert(rows)
     }
 
+    // Commit each subject's picked slot(s) now if the invoice is paid (or there's no
+    // invoice for it at all — e.g. a free/trial slot), otherwise hold them, reserved
+    // for this student only, for the grace period.
+    const graceUntil = addDaysToDateStr(new Date().toISOString().slice(0,10), SLOT_HOLD_GRACE_DAYS)
+    let anyHeld = false
+    for (const subjectId of p.subject_ids) {
+      const held = await commitOrHoldSubjectSlots(subjectId, savedStudent.id, invoiceNo.replace('INV-',''), graceUntil)
+      if (held) anyHeld = true
+    }
+
     if (sendEmail && savedStudent.email && billableLines.length) {
       const issueDate = new Date().toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'})
       const dueDate = new Date(p.invoice_due).toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'})
@@ -7255,6 +7413,9 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
             academyPhone: '+91 97312 70069',
             studentPhone: savedStudent.phone,
             studentIdExt: savedStudent.student_id_ext,
+            // Shown as a grace-period notice when this invoice's class slot(s) are being
+            // held rather than scheduled — see commitOrHoldSubjectSlots above.
+            slotGraceUntil: anyHeld ? new Date(graceUntil).toLocaleDateString('en-IN',{day:'2-digit',month:'long',year:'numeric'}) : null,
           }
         })
       })
@@ -7489,81 +7650,103 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
                 </div>
               </div>
 
-              {/* Free slot picker — one per selected instrument, now correctly scoped per subject */}
+              {/* Free slot picker — one per selected instrument, now correctly scoped per subject.
+                  A higher-tier package (e.g. 8 or 12 classes/month) needs more than one weekly
+                  slot, so this renders one picker per required slot for that subject. */}
               {p.subject_ids.length > 0 && (
-                <div className="space-y-5">
+                <div className="space-y-6">
                   {p.subject_ids.map((subjectId:string) => {
                     const subj = subjects.find((s:any)=>s.id===subjectId)
-                    const slot = p.enroll_slots[subjectId]
+                    const pkg = packages.find((pk:any)=>pk.id===p.package_ids[subjectId])
+                    const required = slotsRequiredForPackage(pkg)
+                    const slotsForSubject: {day:string,time:string}[] = p.enroll_slots[subjectId] || []
+                    const setSlotAt = (idx:number, val:{day:string,time:string}|null) => {
+                      const arr = [...slotsForSubject]
+                      if (val) arr[idx] = val; else arr.splice(idx,1)
+                      sf('enroll_slots', {...p.enroll_slots, [subjectId]: arr})
+                    }
                     return (
-                      <div key={subjectId}>
-                        <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">
-                          Select a Class Slot for {subj?.name||'instrument'} (1 hour)
+                      <div key={subjectId} className="space-y-4">
+                        <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                          {subj?.name||'Instrument'} — {required>1?`${required} weekly slots needed (${pkg?.classes_pm} classes/mo)`:'1 weekly slot (1 hour)'}
                         </div>
-                        <div className="space-y-3">
-                          {['Sun','Tue','Wed','Thu','Fri','Sat'].filter((day:string) => {
-                            // Show every normal operating day by default; only hide a day if
-                            // center_hours has an explicit row marking it closed. Previously this
-                            // only showed days that already had a center_hours row at all, which
-                            // hid any day nobody had gotten around to configuring yet.
-                            const h = centerHours.find((c:any)=>c.day_of_week===day)
-                            return h ? !h.is_closed : true
-                          }).map((day:string) => {
-                            // Scoped to THIS instrument only — booking Piano no longer hides Guitar's free slots.
-                            // No cap on classes per slot: an already-booked slot is still selectable (shown in
-                            // red for visibility), it just means another class for this instrument runs there
-                            // too. Only a deliberately Blocked slot (Center Hours / faculty unavailability) is
-                            // actually excluded.
-                            const bookedSlots = schedules.filter((sc:any) => sc.subject_id===subjectId && sc.day_of_week === day).map((sc:any) => sc.start_time?.slice(0,5))
-                            const blockedSlotsForDay = (blockedSlots||[]).filter((b:any)=>b.day_of_week===day).map((b:any)=>b.start_time?.slice(0,5))
-                            const allSlots = hourSlotsForDay(day)
-                            const selectableSlots = allSlots.filter(t => !blockedSlotsForDay.includes(t))
-                            const dayLabel = day === 'Sun' ? 'Sunday' : day === 'Tue' ? 'Tuesday' : day === 'Wed' ? 'Wednesday' : day === 'Thu' ? 'Thursday' : day === 'Fri' ? 'Friday' : 'Saturday'
-                            // Always render the day — a silent `return null` here is exactly what made
-                            // previous "no slots visible" bugs impossible to diagnose. Show WHY instead.
-                            if (!allSlots.length) {
-                              return <div key={day} className="text-xs text-gray-300">{dayLabel}: no center hours configured for this day</div>
-                            }
-                            if (!selectableSlots.length) {
-                              return (
-                                <div key={day} className="text-xs text-gray-400">
-                                  {dayLabel}: fully blocked ({allSlots.length} slot{allSlots.length!==1?'s':''}, none available)
-                                </div>
-                              )
-                            }
-                            return (
-                              <div key={day}>
-                                <div className="text-xs font-medium text-gray-500 mb-1.5">{dayLabel}</div>
-                                <div className="flex flex-wrap gap-1.5">
-                                  {selectableSlots.map(t => {
-                                    const selected = slot?.day === day && slot?.time === t
-                                    const isBooked = bookedSlots.includes(t)
+                        {Array.from({length: required}).map((_, idx) => {
+                          const slot = slotsForSubject[idx]
+                          return (
+                            <div key={idx}>
+                              {required>1 && <div className="text-xs font-medium text-gray-500 mb-2">Slot {idx+1} of {required}</div>}
+                              <div className="space-y-3">
+                                {['Sun','Tue','Wed','Thu','Fri','Sat'].filter((day:string) => {
+                                  // Show every normal operating day by default; only hide a day if
+                                  // center_hours has an explicit row marking it closed. Previously this
+                                  // only showed days that already had a center_hours row at all, which
+                                  // hid any day nobody had gotten around to configuring yet.
+                                  const h = centerHours.find((c:any)=>c.day_of_week===day)
+                                  return h ? !h.is_closed : true
+                                }).map((day:string) => {
+                                  // Scoped to THIS instrument only — booking Piano no longer hides Guitar's free slots.
+                                  // No cap on classes per slot: an already-booked slot is still selectable (shown in
+                                  // red for visibility), it just means another class for this instrument runs there
+                                  // too. Excluded: a deliberately Blocked slot (Center Hours / faculty unavailability),
+                                  // a slot actively held for another student pending their payment, and any slot
+                                  // already picked for this same subject's other required slot(s).
+                                  const bookedSlots = schedules.filter((sc:any) => sc.subject_id===subjectId && sc.day_of_week === day).map((sc:any) => sc.start_time?.slice(0,5))
+                                  const blockedSlotsForDay = (blockedSlots||[]).filter((b:any)=>b.day_of_week===day).map((b:any)=>b.start_time?.slice(0,5))
+                                  const allSlots = hourSlotsForDay(day)
+                                  const otherIndicesPicked = slotsForSubject.filter((_,i)=>i!==idx).filter(s=>s?.day===day).map(s=>s.time)
+                                  const selectableSlots = allSlots.filter(t => !blockedSlotsForDay.includes(t) && !otherIndicesPicked.includes(t))
+                                  const dayLabel = day === 'Sun' ? 'Sunday' : day === 'Tue' ? 'Tuesday' : day === 'Wed' ? 'Wednesday' : day === 'Thu' ? 'Thursday' : day === 'Fri' ? 'Friday' : 'Saturday'
+                                  // Always render the day — a silent `return null` here is exactly what made
+                                  // previous "no slots visible" bugs impossible to diagnose. Show WHY instead.
+                                  if (!allSlots.length) {
+                                    return <div key={day} className="text-xs text-gray-300">{dayLabel}: no center hours configured for this day</div>
+                                  }
+                                  if (!selectableSlots.length) {
                                     return (
-                                      <button key={t} type="button"
-                                        onClick={() => sf('enroll_slots', {...p.enroll_slots, [subjectId]: {day, time: t}})}
-                                        title={isBooked ? 'Another class for this instrument is already here — you can still book this one' : ''}
-                                        className={clsx('px-2.5 py-1 rounded-lg text-xs font-mono font-medium border transition-all cursor-pointer',
-                                          selected ? 'bg-brand-500 text-white border-brand-500' :
-                                          isBooked ? 'bg-red-50 text-red-600 border-red-100 hover:bg-red-100' :
-                                          'bg-emerald-50 text-emerald-700 border-emerald-100 hover:bg-emerald-100'
-                                        )}>
-                                        {t}
-                                      </button>
+                                      <div key={day} className="text-xs text-gray-400">
+                                        {dayLabel}: fully blocked ({allSlots.length} slot{allSlots.length!==1?'s':''}, none available)
+                                      </div>
                                     )
-                                  })}
-                                </div>
+                                  }
+                                  return (
+                                    <div key={day}>
+                                      <div className="text-xs font-medium text-gray-500 mb-1.5">{dayLabel}</div>
+                                      <div className="flex flex-wrap gap-1.5">
+                                        {selectableSlots.map(t => {
+                                          const selected = slot?.day === day && slot?.time === t
+                                          const isBooked = bookedSlots.includes(t)
+                                          const heldByOthers = activeHoldsForSlot(slotHolds, subjectId, day, t, savedStudent?.id)
+                                          const isHeld = heldByOthers.length > 0
+                                          return (
+                                            <button key={t} type="button" disabled={isHeld}
+                                              onClick={() => !isHeld && setSlotAt(idx, {day, time: t})}
+                                              title={isHeld ? `Reserved for another student's pending payment until ${heldByOthers[0].grace_until}` : isBooked ? 'Another class for this instrument is already here — you can still book this one' : ''}
+                                              className={clsx('px-2.5 py-1 rounded-lg text-xs font-mono font-medium border transition-all',
+                                                isHeld ? 'bg-orange-50 text-orange-400 border-orange-100 cursor-not-allowed' :
+                                                selected ? 'bg-brand-500 text-white border-brand-500 cursor-pointer' :
+                                                isBooked ? 'bg-red-50 text-red-600 border-red-100 hover:bg-red-100 cursor-pointer' :
+                                                'bg-emerald-50 text-emerald-700 border-emerald-100 hover:bg-emerald-100 cursor-pointer'
+                                              )}>
+                                              {isHeld?'⏳ ':''}{t}
+                                            </button>
+                                          )
+                                        })}
+                                      </div>
+                                    </div>
+                                  )
+                                })}
                               </div>
-                            )
-                          })}
-                        </div>
-                        {slot?.day && slot?.time ? (
-                          <div className="mt-3 flex items-center justify-between bg-brand-50 border border-brand-100 rounded-xl px-3 py-2.5">
-                            <div className="text-sm text-brand-700">Slot selected: <strong>{slot.day} at {slot.time}</strong></div>
-                            <button type="button" onClick={() => { const s={...p.enroll_slots}; delete s[subjectId]; sf('enroll_slots', s) }} className="text-xs text-brand-400 hover:text-brand-600">Clear</button>
-                          </div>
-                        ) : (
-                          <p className="text-xs text-gray-400 mt-2">Click a green slot to book a class time for {subj?.name} — this will be created automatically when you finish enrolling. You can also skip and assign a slot later from the Schedule tab.</p>
-                        )}
+                              {slot?.day && slot?.time ? (
+                                <div className="mt-3 flex items-center justify-between bg-brand-50 border border-brand-100 rounded-xl px-3 py-2.5">
+                                  <div className="text-sm text-brand-700">Slot selected: <strong>{slot.day} at {slot.time}</strong></div>
+                                  <button type="button" onClick={() => setSlotAt(idx, null)} className="text-xs text-brand-400 hover:text-brand-600">Clear</button>
+                                </div>
+                              ) : (
+                                <p className="text-xs text-gray-400 mt-2">Click a green slot to book a class time for {subj?.name} — this will be created automatically once the invoice is paid. You can also skip and assign a slot later from the Schedule tab.</p>
+                              )}
+                            </div>
+                          )
+                        })}
                       </div>
                     )
                   })}
@@ -7637,11 +7820,12 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
                     <strong>{savedStudent?.full_name}</strong> enrolled · {p.subject_ids.length} instrument(s) · {p.grade_level}
                     {Object.keys(p.enroll_slots).length > 0 && (
                       <div className="mt-1 space-y-0.5">
-                        {p.subject_ids.filter((sid:string)=>p.enroll_slots[sid]).map((sid:string) => {
+                        {p.subject_ids.filter((sid:string)=>(p.enroll_slots[sid]||[]).some((s:any)=>s?.day&&s?.time)).map((sid:string) => {
                           const subj = subjects.find((s:any)=>s.id===sid)
-                          const slot = p.enroll_slots[sid]
-                          return <div key={sid}>🗓️ {subj?.name}: <strong>{slot.day} at {slot.time}</strong></div>
+                          const slots = (p.enroll_slots[sid]||[]).filter((s:any)=>s?.day&&s?.time)
+                          return <div key={sid}>🗓️ {subj?.name}: <strong>{slots.map((s:any)=>`${s.day} at ${s.time}`).join(', ')}</strong></div>
                         })}
+                        <div className="text-xs text-emerald-600 mt-1">Slots above are scheduled once this invoice is marked Paid — otherwise they're held for {SLOT_HOLD_GRACE_DAYS} days pending payment.</div>
                       </div>
                     )}
                   </div>
