@@ -2238,20 +2238,24 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
                 <div className="label mb-2">Slot availability for {form.day_of_week} ({daySlots[0]||'—'}–{daySlots.length?daySlots[daySlots.length-1]:'—'})</div>
                 <div className="flex flex-wrap gap-1.5">
                   {daySlots.map(t=>{
+                    // No cap on how many classes (of this or any instrument) can share a
+                    // slot — "booked" is shown only as information (another class already
+                    // runs here), never as a block. Only a deliberately Blocked slot
+                    // (Center Hours / faculty unavailability) stays non-selectable.
                     const isBooked=bookedSlots.includes(t)
                     const hasConflict=conflictSlots.includes(t)
                     const isBlockedSlot=blockedForDay.includes(t)
                     const isSelected=form.start_time===t
-                    const disabled=isBooked||isBlockedSlot
+                    const disabled=isBlockedSlot
                     const blockedInfo=blockedSlots.find((b:any)=>b.day_of_week===form.day_of_week&&b.start_time?.slice(0,5)===t)
                     return(
                       <button key={t} type="button"
                         onClick={()=>!disabled&&setForm((f:any)=>({...f,start_time:t}))}
-                        title={isBlockedSlot?`Blocked${blockedInfo?.reason?': '+blockedInfo.reason:''}`:isBooked?'Already booked':''}
+                        title={isBlockedSlot?`Blocked${blockedInfo?.reason?': '+blockedInfo.reason:''}`:isBooked?'Another class for this instrument is already here — you can still add this one':''}
                         className={clsx('px-2.5 py-1 rounded-lg text-xs font-mono font-medium border transition-all',
                           isBlockedSlot?'bg-gray-100 text-gray-300 border-gray-100 cursor-not-allowed':
-                          isBooked?'bg-red-50 text-red-400 border-red-100 cursor-not-allowed line-through':
                           isSelected?'bg-brand-500 text-white border-brand-500':
+                          isBooked?'bg-red-50 text-red-600 border-red-100 hover:bg-red-100 cursor-pointer':
                           hasConflict?'bg-amber-50 text-amber-600 border-amber-100 hover:bg-amber-100 cursor-pointer':
                           'bg-emerald-50 text-emerald-700 border-emerald-100 hover:bg-emerald-100 cursor-pointer'
                         )}>
@@ -2263,7 +2267,7 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,reload}
                 <div className="flex gap-3 mt-2 text-xs text-gray-400 flex-wrap">
                   <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-emerald-100 inline-block"/>Free</span>
                   <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-amber-100 inline-block"/>Other class</span>
-                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-red-100 inline-block"/>Booked for subject</span>
+                  <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-red-100 inline-block"/>Same instrument already here — still bookable</span>
                   <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-sm bg-gray-100 inline-block"/>🚫 Blocked</span>
                 </div>
               </div>
@@ -7499,21 +7503,25 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
                             const h = centerHours.find((c:any)=>c.day_of_week===day)
                             return h ? !h.is_closed : true
                           }).map((day:string) => {
-                            // Scoped to THIS instrument only — booking Piano no longer hides Guitar's free slots
+                            // Scoped to THIS instrument only — booking Piano no longer hides Guitar's free slots.
+                            // No cap on classes per slot: an already-booked slot is still selectable (shown in
+                            // red for visibility), it just means another class for this instrument runs there
+                            // too. Only a deliberately Blocked slot (Center Hours / faculty unavailability) is
+                            // actually excluded.
                             const bookedSlots = schedules.filter((sc:any) => sc.subject_id===subjectId && sc.day_of_week === day).map((sc:any) => sc.start_time?.slice(0,5))
                             const blockedSlotsForDay = (blockedSlots||[]).filter((b:any)=>b.day_of_week===day).map((b:any)=>b.start_time?.slice(0,5))
                             const allSlots = hourSlotsForDay(day)
-                            const freeSlots = allSlots.filter(t => !bookedSlots.includes(t) && !blockedSlotsForDay.includes(t))
+                            const selectableSlots = allSlots.filter(t => !blockedSlotsForDay.includes(t))
                             const dayLabel = day === 'Sun' ? 'Sunday' : day === 'Tue' ? 'Tuesday' : day === 'Wed' ? 'Wednesday' : day === 'Thu' ? 'Thursday' : day === 'Fri' ? 'Friday' : 'Saturday'
                             // Always render the day — a silent `return null` here is exactly what made
                             // previous "no slots visible" bugs impossible to diagnose. Show WHY instead.
                             if (!allSlots.length) {
                               return <div key={day} className="text-xs text-gray-300">{dayLabel}: no center hours configured for this day</div>
                             }
-                            if (!freeSlots.length) {
+                            if (!selectableSlots.length) {
                               return (
                                 <div key={day} className="text-xs text-gray-400">
-                                  {dayLabel}: fully {blockedSlotsForDay.length >= allSlots.length ? 'blocked' : 'booked'} ({allSlots.length} slot{allSlots.length!==1?'s':''}, none free)
+                                  {dayLabel}: fully blocked ({allSlots.length} slot{allSlots.length!==1?'s':''}, none available)
                                 </div>
                               )
                             }
@@ -7521,21 +7529,22 @@ function EnrollmentModal({ student, subjects, packages, schedules, onClose, relo
                               <div key={day}>
                                 <div className="text-xs font-medium text-gray-500 mb-1.5">{dayLabel}</div>
                                 <div className="flex flex-wrap gap-1.5">
-                                  {freeSlots.map(t => {
+                                  {selectableSlots.map(t => {
                                     const selected = slot?.day === day && slot?.time === t
+                                    const isBooked = bookedSlots.includes(t)
                                     return (
                                       <button key={t} type="button"
                                         onClick={() => sf('enroll_slots', {...p.enroll_slots, [subjectId]: {day, time: t}})}
+                                        title={isBooked ? 'Another class for this instrument is already here — you can still book this one' : ''}
                                         className={clsx('px-2.5 py-1 rounded-lg text-xs font-mono font-medium border transition-all cursor-pointer',
-                                          selected ? 'bg-brand-500 text-white border-brand-500' : 'bg-emerald-50 text-emerald-700 border-emerald-100 hover:bg-emerald-100'
+                                          selected ? 'bg-brand-500 text-white border-brand-500' :
+                                          isBooked ? 'bg-red-50 text-red-600 border-red-100 hover:bg-red-100' :
+                                          'bg-emerald-50 text-emerald-700 border-emerald-100 hover:bg-emerald-100'
                                         )}>
                                         {t}
                                       </button>
                                     )
                                   })}
-                                  {bookedSlots.map((t:string) => (
-                                    <span key={t} className="px-2.5 py-1 rounded-lg text-xs font-mono bg-gray-100 text-gray-400 line-through cursor-not-allowed">{t}</span>
-                                  ))}
                                 </div>
                               </div>
                             )
