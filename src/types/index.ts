@@ -7,6 +7,34 @@ export interface Profile {
   role: Role
   phone?: string
   created_at: string
+  biometric_id?: string | null
+}
+
+// ─── Biometric attendance ───────────────────────────────────
+export interface BiometricDevice {
+  id: string
+  serial_number: string
+  name: string
+  location?: string | null
+  is_active: boolean
+  last_seen_at?: string | null
+}
+
+export type DailyAttendanceStatus = 'present' | 'half_day' | 'absent' | 'on_leave' | 'holiday' | 'week_off'
+
+export interface StaffAttendanceDaily {
+  id: string
+  profile_id: string
+  work_date: string
+  first_punch?: string | null
+  last_punch?: string | null
+  punch_count: number
+  total_minutes: number
+  status: DailyAttendanceStatus
+  is_late: boolean
+  needs_review: boolean
+  review_reason?: string | null
+  is_manual_override: boolean
 }
 
 export interface Student {
