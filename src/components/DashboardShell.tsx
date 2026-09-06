@@ -1919,14 +1919,21 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,slotHol
     ? centerHours.filter((h:any)=>!h.is_closed).map((h:any)=>h.day_of_week).sort((a:string,b:string)=>['Sun','Tue','Wed','Thu','Fri','Sat'].indexOf(a)-['Sun','Tue','Wed','Thu','Fri','Sat'].indexOf(b))
     : ['Sun','Tue','Wed','Thu','Fri','Sat'] // fallback while loading
 
-  // 60-minute slots, computed per-day from open/close time (union across all working days for the grid)
+  // 30-minute-interval start times for a 60-minute class, computed per-day from open/close
+  // time (union across all working days for the grid). A class is still fixed at 60 minutes —
+  // this only makes the half-hour marks (10:30, 11:30, …) available as start times too, not
+  // just the top of the hour, as long as the class still fits before closing.
   function hourSlotsForDay(day:string):string[] {
     const h = centerHours.find((c:any)=>c.day_of_week===day) || DEFAULT_HOURS[day]
     if (!h || h.is_closed) return []
     const slots:string[] = []
-    let [oh] = h.open_time.split(':').map(Number)
-    let [ch] = h.close_time.split(':').map(Number)
-    for (let hr=oh; hr<ch; hr++) slots.push(`${String(hr).padStart(2,'0')}:00`)
+    const [oh,om=0] = h.open_time.split(':').map(Number)
+    const [ch,cm=0] = h.close_time.split(':').map(Number)
+    const openMin = oh*60 + (om||0)
+    const closeMin = ch*60 + (cm||0)
+    for (let m=openMin; m+60<=closeMin; m+=30) {
+      slots.push(`${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`)
+    }
     return slots
   }
   // Union of all hour slots across working days — used for the weekly grid's row labels
@@ -3440,9 +3447,11 @@ function CenterHoursTab({profile}:any){
         {CH_DAYS.map((day,i)=>{
           const h=hours.find(x=>x.day_of_week===day)
           if(!h) return null
-          const oh=parseInt(h.open_time.split(':')[0])
-          const ch=parseInt(h.close_time.split(':')[0])
-          const hourCount=Math.max(0,ch-oh)
+          const [oh,om=0]=h.open_time.split(':').map(Number)
+          const [ch,cm=0]=h.close_time.split(':').map(Number)
+          const openMin=oh*60+(om||0), closeMin=ch*60+(cm||0)
+          // Number of 30-minute-interval start times a 60-minute class can begin at
+          const hourCount=closeMin-openMin>=60 ? Math.floor((closeMin-openMin-60)/30)+1 : 0
           return(
             <div key={day} className={clsx('flex items-center gap-4 px-5 py-4',i>0&&'border-t border-gray-100',h.is_closed&&'bg-gray-50/60')}>
               <div className="w-28 flex-shrink-0">
@@ -3470,7 +3479,7 @@ function CenterHoursTab({profile}:any){
                   </div>
                   <div className="ml-auto flex-shrink-0 text-right">
                     <div className="text-sm font-semibold text-brand-600">{hourCount>0?hourCount:0} slot{hourCount!==1?'s':''}</div>
-                    <div className="text-xs text-gray-400">1-hour classes</div>
+                    <div className="text-xs text-gray-400">60-min classes, 30-min start times</div>
                   </div>
                 </>
               )}
@@ -3479,7 +3488,7 @@ function CenterHoursTab({profile}:any){
         })}
       </div>
 
-      <p className="text-xs text-gray-400 mt-3">Changes apply immediately to the calendar's Week/Day/Month views and the slot pickers in Add Class, Enrollment, and the Student Portal reschedule flow. All classes are fixed at 60 minutes — no 30-minute slots are shown.</p>
+      <p className="text-xs text-gray-400 mt-3">Changes apply immediately to the calendar's Week/Day/Month views and the slot pickers in Add Class, Enrollment, and the Student Portal reschedule flow. Classes are still fixed at 60 minutes, but can now start on the hour or the half-hour (10:00, 10:30, 11:00, …) as long as the class fits before closing.</p>
     </div>
   )
 }
@@ -7131,13 +7140,19 @@ function EnrollmentModal({ student, subjects, packages, schedules, payments, slo
     Fri:{open_time:'15:00',close_time:'20:00',is_closed:false},
     Sat:{open_time:'10:00',close_time:'20:00',is_closed:false},
   }
+  // 30-minute-interval start times for a 60-minute class — see the matching comment on
+  // ScheduleTab's hourSlotsForDay for why this isn't just the top of the hour anymore.
   function hourSlotsForDay(day:string):string[] {
     const h = centerHours.find((c:any)=>c.day_of_week===day) || DEFAULT_HOURS[day]
     if (!h || h.is_closed) return []
     const slots:string[] = []
-    const oh = parseInt(h.open_time.split(':')[0])
-    const ch = parseInt(h.close_time.split(':')[0])
-    for (let hr=oh; hr<ch; hr++) slots.push(`${String(hr).padStart(2,'0')}:00`)
+    const [oh,om=0] = h.open_time.split(':').map(Number)
+    const [ch,cm=0] = h.close_time.split(':').map(Number)
+    const openMin = oh*60 + (om||0)
+    const closeMin = ch*60 + (cm||0)
+    for (let m=openMin; m+60<=closeMin; m+=30) {
+      slots.push(`${String(Math.floor(m/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`)
+    }
     return slots
   }
   const supabase = sb()
