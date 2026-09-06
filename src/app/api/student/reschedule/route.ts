@@ -6,6 +6,48 @@ async function getStudentFromToken(svc: any, token: string) {
   return session?.student_id || null
 }
 
+// Is this student's most recent PAID invoice for this subject currently covering today?
+// Mirrors the billing-cycle math in DashboardShell's Revenue Forecast report (kept as a
+// small standalone copy here rather than importing from a client component).
+function paymentAnchorDateStr(p: any): string | null {
+  if (p.payment_date) return p.payment_date
+  if (p.due_date) return p.due_date
+  if (p.month_label) {
+    const parsed = new Date(`1 ${p.month_label}`)
+    if (!isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10)
+  }
+  if (p.created_at) return String(p.created_at).slice(0, 10)
+  return null
+}
+function coverageEndDate(anchorStr: string, cycleMonths: number): Date {
+  const d = new Date(anchorStr + 'T00:00:00')
+  d.setMonth(d.getMonth() + cycleMonths)
+  d.setDate(d.getDate() - 1)
+  return d
+}
+async function isSubjectPaidNow(svc: any, studentId: string, subjectId: string): Promise<boolean> {
+  const { data: rows } = await svc.from('payments').select('*').eq('student_id', studentId).eq('subject_id', subjectId).eq('status', 'paid')
+  if (!rows?.length) return false
+  const groups = new Map<string, any[]>()
+  rows.forEach((p: any) => { const key = p.invoice_group_id || p.id; if (!groups.has(key)) groups.set(key, []); groups.get(key)!.push(p) })
+  let latestAnchor: string | null = null, latestMonths = 1
+  groups.forEach(group => {
+    const withAnchor = group.map(p => ({ p, anchor: paymentAnchorDateStr(p) })).filter(x => x.anchor)
+    if (!withAnchor.length) return
+    withAnchor.sort((a, b) => a.anchor!.localeCompare(b.anchor!))
+    const earliest = withAnchor[0]
+    if (!latestAnchor || earliest.anchor! > latestAnchor) {
+      latestAnchor = earliest.anchor!
+      latestMonths = group.map((p: any) => Number(p.months)).find((m: number) => m > 0) || 1
+    }
+  })
+  if (!latestAnchor) return false
+  const anchor: string = latestAnchor
+  const todayStr = new Date().toISOString().slice(0, 10)
+  const end = coverageEndDate(anchor, latestMonths)
+  return anchor <= todayStr && end.toISOString().slice(0, 10) >= todayStr
+}
+
 export async function POST(req: NextRequest) {
   const svc = await serviceSB()
   const body = await req.json()
@@ -24,6 +66,17 @@ export async function POST(req: NextRequest) {
   if (schedule_id) {
     const { data: existing } = await svc.from('reschedule_requests').select('id').eq('student_id', studentId).eq('schedule_id', schedule_id).eq('status', 'pending').maybeSingle()
     if (existing) return NextResponse.json({ error: 'You already have a pending reschedule request for this class.' }, { status: 409 })
+
+    // One-time only — once this specific enrollment has already used its reschedule, no more.
+    const { data: ss } = await svc.from('schedule_students').select('reschedule_used_at').eq('schedule_id', schedule_id).eq('student_id', studentId).maybeSingle()
+    if (ss?.reschedule_used_at) return NextResponse.json({ error: "You've already used your one-time reschedule for this class." }, { status: 409 })
+  }
+
+  // Requires the current invoice for this class to be paid — a reschedule isn't available
+  // on an unpaid/overdue invoice.
+  if (subjectId) {
+    const eligible = await isSubjectPaidNow(svc, studentId, subjectId)
+    if (!eligible) return NextResponse.json({ error: 'A reschedule requires your current invoice for this class to be marked paid.' }, { status: 409 })
   }
 
   const { data: blocked } = await svc.from('blocked_slots').select('id, reason').eq('day_of_week', requested_day).eq('start_time', requested_time).maybeSingle()

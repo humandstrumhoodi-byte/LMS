@@ -47,6 +47,8 @@ export async function POST(req: NextRequest) {
     if (rr.schedule_id) {
       // Update the existing class schedule to the new day/time
       await svc.from('class_schedules').update({ day_of_week: rr.requested_day, start_time: rr.requested_time }).eq('id', rr.schedule_id)
+      // This was a one-time reschedule — mark it used so this enrollment can't request another.
+      await svc.from('schedule_students').update({ reschedule_used_at: new Date().toISOString() }).eq('schedule_id', rr.schedule_id).eq('student_id', rr.student_id)
     }
   }
 
