@@ -383,6 +383,9 @@ function DashboardShellInner({profile}:{profile:Profile}){
     {id:'payments',icon:Receipt,label:'Payments',show:perms.viewPayments},
     {id:'reports',   icon:BarChart2,   label:'Reports',       show:perms.viewPayments},
     {id:'attendance', icon:CheckCircle, label:'Attendance',    show:perms.viewOwnSchedule},
+    {id:'staff-attendance', icon:CheckCircle, label:'Staff Attendance', show:perms.manageUsers, route:'/dashboard/attendance'},
+    {id:'leave',      icon:CalendarDays, label:'Leave',        show:true, route:'/dashboard/leave'},
+    {id:'payroll',    icon:Coins,       label:'Payroll',       show:perms.manageUsers, route:'/dashboard/payroll'},
     {id:'users',      icon:ShieldCheck, label:'Users & Roles', show:perms.manageUsers},
     {id:'settings',   icon:Clock,       label:'Center Hours',  show:perms.manageUsers},
     {id:'help',       icon:LifeBuoy,    label:'Help & Support',show:true},
@@ -399,7 +402,7 @@ function DashboardShellInner({profile}:{profile:Profile}){
         </div>
         <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
           {nav.map(n=>{const Icon=n.icon;const active=tab===n.id;return(
-            <button key={n.id} onClick={()=>setTab(n.id)} className={clsx('nav-link w-full text-left',active&&'active')}>
+            <button key={n.id} onClick={()=>(n as any).route?router.push((n as any).route):setTab(n.id)} className={clsx('nav-link w-full text-left',active&&'active')}>
               <Icon className="w-4 h-4 flex-shrink-0"/><span className="flex-1">{n.label}</span>{active&&<ChevronRight className="w-3 h-3 opacity-40"/>}
             </button>
           )})}

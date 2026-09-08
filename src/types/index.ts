@@ -37,6 +37,79 @@ export interface StaffAttendanceDaily {
   is_manual_override: boolean
 }
 
+// ─── Leave + payroll ─────────────────────────────────────────
+export interface LeaveType {
+  id: string
+  name: string
+  code: string
+  is_paid: boolean
+  annual_days: number
+  is_active: boolean
+}
+
+export interface StaffLeaveBalance {
+  id: string
+  profile_id: string
+  leave_type_id: string
+  leave_year_start: string
+  opening_balance: number
+  used_days: number
+}
+
+export type LeaveRequestStatus = 'pending' | 'approved' | 'rejected' | 'cancelled'
+
+export interface LeaveRequest {
+  id: string
+  profile_id: string
+  leave_type_id: string
+  start_date: string
+  end_date: string
+  is_half_day: boolean
+  reason?: string | null
+  status: LeaveRequestStatus
+  reviewed_by?: string | null
+  reviewed_at?: string | null
+  review_note?: string | null
+  created_at: string
+}
+
+export type PayType = 'monthly' | 'per_class' | 'both'
+
+export interface StaffSalaryStructure {
+  id: string
+  profile_id: string
+  pay_type: PayType
+  monthly_salary?: number | null
+  per_class_rate?: number | null
+  effective_from: string
+  is_active: boolean
+}
+
+export interface PayRun {
+  id: string
+  period_start: string
+  period_end: string
+  month_label: string
+  status: 'draft' | 'finalized'
+  created_at: string
+}
+
+export interface Payslip {
+  id: string
+  pay_run_id: string
+  profile_id: string
+  pay_type: PayType
+  working_days: number
+  present_days: number
+  paid_leave_days: number
+  lop_days: number
+  classes_taught: number
+  monthly_component: number
+  per_class_component: number
+  gross_amount: number
+  notes?: string | null
+}
+
 export interface Student {
   id: string
   full_name: string
