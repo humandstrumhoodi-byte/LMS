@@ -5,6 +5,8 @@ import type { Role } from '@/types'
 const GUARD: Record<string, Role[]> = {
   '/dashboard/users':    ['superadmin'],
   '/dashboard/attendance': ['superadmin', 'center_manager'],
+  '/dashboard/leave':    ['superadmin', 'center_manager', 'teacher'],
+  '/dashboard/payroll':  ['superadmin', 'center_manager'],
   '/dashboard/fees':     ['superadmin', 'center_manager'],
   '/dashboard/payments': ['superadmin', 'center_manager'],
   '/dashboard/teachers': ['superadmin', 'center_manager'],
