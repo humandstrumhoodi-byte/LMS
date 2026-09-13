@@ -12,6 +12,22 @@ async function checkAuth() {
   return user
 }
 
+const DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
+
+// Next date on/after `fromDateStr` that falls on `dayName`. Used to translate
+// the requested day-of-week into a concrete date for the moved-to occurrence,
+// anchored to the same week as the occurrence being moved (or the next one, if
+// the requested day has already passed within that week).
+function nextOccurrenceOnOrAfter(fromDateStr: string, dayName: string): string {
+  const targetIdx = DOW.indexOf(dayName)
+  const d = new Date(fromDateStr + 'T00:00:00')
+  if (targetIdx >= 0) {
+    const delta = (targetIdx - d.getDay() + 7) % 7
+    d.setDate(d.getDate() + delta)
+  }
+  return d.toISOString().slice(0, 10)
+}
+
 function mailer() {
   const u = process.env.GMAIL_USER, p = process.env.GMAIL_APP_PASSWORD
   if (!u || !p) return null
@@ -45,8 +61,21 @@ export async function POST(req: NextRequest) {
     if (blocked) return NextResponse.json({ error: 'This slot has since been blocked. Cannot approve.' }, { status: 409 })
 
     if (rr.schedule_id) {
-      // Update the existing class schedule to the new day/time
-      await svc.from('class_schedules').update({ day_of_week: rr.requested_day, start_time: rr.requested_time }).eq('id', rr.schedule_id)
+      // Moves ONLY this one occurrence — the recurring class_schedules row (which
+      // governs every future week) is deliberately left untouched. A dated
+      // exception is recorded instead, so next week's (and every future week's)
+      // class stays exactly where it was.
+      const exceptionDate: string = rr.requested_date || nextOccurrenceOnOrAfter(new Date().toISOString().slice(0, 10), rr.current_day || rr.requested_day)
+      const newDate = nextOccurrenceOnOrAfter(exceptionDate, rr.requested_day)
+      const { error: exErr } = await svc.from('class_schedule_exceptions').upsert({
+        schedule_id: rr.schedule_id,
+        exception_date: exceptionDate,
+        new_date: newDate,
+        new_time: rr.requested_time,
+        reason: rr.reason || null,
+        created_by: user.id,
+      }, { onConflict: 'schedule_id,exception_date' })
+      if (exErr) return NextResponse.json({ error: exErr.message }, { status: 500 })
       // This was a one-time reschedule — mark it used so this enrollment can't request another.
       await svc.from('schedule_students').update({ reschedule_used_at: new Date().toISOString() }).eq('schedule_id', rr.schedule_id).eq('student_id', rr.student_id)
     }

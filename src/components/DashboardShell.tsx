@@ -6,7 +6,7 @@ import {
   LayoutDashboard, Users, GraduationCap, BookOpen, CalendarDays, Coins,
   Receipt, ShieldCheck, LogOut, Music, Bell, FileText, CheckCircle,
   Plus, Trash2, Edit, Search, X, ChevronRight, Loader2, AlertCircle,
-  Upload, Download, UserPlus, Mail, Send, Eye, EyeOff, CreditCard, Phone, KeyRound, RefreshCw, BarChart2, Clock, LifeBuoy, HelpCircle, SplitSquareHorizontal
+  Upload, Download, UserPlus, Mail, Send, Eye, EyeOff, CreditCard, Phone, KeyRound, RefreshCw, BarChart2, Clock, LifeBuoy, HelpCircle, SplitSquareHorizontal, Inbox
 } from 'lucide-react'
 import clsx from 'clsx'
 import type { Profile, Perms, Role } from '@/types'
@@ -326,6 +326,16 @@ function DashboardShellInner({profile}:{profile:Profile}){
   const [subjectTeachers,setSubjectTeachers]=useState<any[]>([])
   const [attendance,setAttendance]=useState<any[]>([])
   const [slotHolds,setSlotHolds]=useState<any[]>([])
+  const [pendingApprovalsCount,setPendingApprovalsCount]=useState(0)
+
+  const loadPendingApprovalsCount=useCallback(async()=>{
+    if (profile.role!=='superadmin') return
+    try{
+      const r=await fetch('/api/invoice-delete-requests?status=pending')
+      const d=await r.json()
+      setPendingApprovalsCount((d.requests||[]).length)
+    }catch(e){console.warn('[pending approvals count]',e)}
+  },[profile.role])
 
   const load=useCallback(async()=>{
     try{
@@ -369,6 +379,7 @@ function DashboardShellInner({profile}:{profile:Profile}){
   },[])
 
   useEffect(()=>{load()},[load])
+  useEffect(()=>{loadPendingApprovalsCount()},[loadPendingApprovalsCount])
   async function signOut(){await supabase.auth.signOut();router.push('/login')}
 
   const nav=[
@@ -386,6 +397,7 @@ function DashboardShellInner({profile}:{profile:Profile}){
     {id:'staff-attendance', icon:CheckCircle, label:'Staff Attendance', show:perms.manageUsers, route:'/dashboard/attendance'},
     {id:'leave',      icon:CalendarDays, label:'Leave',        show:true, route:'/dashboard/leave'},
     {id:'payroll',    icon:Coins,       label:'Payroll',       show:perms.manageUsers, route:'/dashboard/payroll'},
+    {id:'approvals',  icon:Inbox,       label:'Approvals',     show:profile.role==='superadmin', badge:pendingApprovalsCount||undefined},
     {id:'users',      icon:ShieldCheck, label:'Users & Roles', show:perms.manageUsers},
     {id:'settings',   icon:Clock,       label:'Center Hours',  show:perms.manageUsers},
     {id:'help',       icon:LifeBuoy,    label:'Help & Support',show:true},
@@ -403,7 +415,9 @@ function DashboardShellInner({profile}:{profile:Profile}){
         <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
           {nav.map(n=>{const Icon=n.icon;const active=tab===n.id;return(
             <button key={n.id} onClick={()=>(n as any).route?router.push((n as any).route):setTab(n.id)} className={clsx('nav-link w-full text-left',active&&'active')}>
-              <Icon className="w-4 h-4 flex-shrink-0"/><span className="flex-1">{n.label}</span>{active&&<ChevronRight className="w-3 h-3 opacity-40"/>}
+              <Icon className="w-4 h-4 flex-shrink-0"/><span className="flex-1">{n.label}</span>
+              {!!(n as any).badge&&<span className="px-1.5 py-0.5 rounded-full bg-red-500 text-white text-[10px] font-semibold leading-none">{(n as any).badge}</span>}
+              {active&&<ChevronRight className="w-3 h-3 opacity-40"/>}
             </button>
           )})}
         </nav>
@@ -433,8 +447,9 @@ function DashboardShellInner({profile}:{profile:Profile}){
           {tab==='packages'&&<PackagesTab packages={packages} subjects={subjects} reload={load}/>}
           {tab==='schedule'&&<ScheduleTab schedules={schedules} subjects={subjects} students={students} profiles={profiles} profile={profile} perms={perms} slotHolds={slotHolds} reload={load}/>}
           {tab==='fees'&&<FeesTab subjects={subjects} fees={fees} reload={load}/>}
-          {tab==='payments'&&<PaymentsTab payments={payments} students={students} subjects={subjects} fees={fees} perms={perms} reload={load}/>}
-          {tab==='reports'&&<ReportsTab students={students} subjects={subjects} payments={payments} profiles={profiles} attendance={attendance} reload={load}/>}
+          {tab==='payments'&&<PaymentsTab payments={payments} students={students} subjects={subjects} fees={fees} perms={perms} profile={profile} reload={load}/>}
+          {tab==='reports'&&<ReportsTab students={students} subjects={subjects} payments={payments} profiles={profiles} attendance={attendance} profile={profile} reload={load}/>}
+          {tab==='approvals'&&<ApprovalsTab profile={profile} onReviewed={()=>{loadPendingApprovalsCount();load()}}/>}
           {tab==='attendance'&&<AttendanceTab schedules={schedules} subjects={subjects} students={students} profiles={profiles} profile={profile} attendance={attendance} reload={load}/>}
           {tab==='users'&&<UsersTab profiles={profiles} profile={profile} reload={load}/>}
           {tab==='settings'&&<CenterHoursTab profile={profile}/>}
@@ -731,17 +746,22 @@ function HomeTab({profile,perms,students,profiles,payments,schedules,subjects,le
         </div>
 
         {/* ── Payment summary ── */}
-        <div className="grid grid-cols-4 gap-3 mb-4">
+        {/* YTD collections is superadmin-only — center managers shouldn't see org-wide
+            year-to-date figures, so the card is omitted (not just visually hidden) and
+            the grid collapses to 3 columns for that role. */}
+        <div className={clsx('grid gap-3 mb-4',profile.role==='superadmin'?'grid-cols-4':'grid-cols-3')}>
           <button onClick={()=>setPaymentDrilldown({title:`Month to Date — Collected`,list:mtdPaidList,color:'text-amber-700'})} className="card p-4 bg-amber-50 border-amber-100 text-left hover:shadow-md transition-shadow">
             <div className="text-xs text-amber-600 font-medium mb-1">Collected MTD</div>
             <div className="text-xl font-semibold text-amber-700">{fmt(totalMTD)}</div>
             <div className="text-xs text-amber-500 mt-1">{mtdPaidList.length} payments</div>
           </button>
-          <button onClick={()=>setPaymentDrilldown({title:`${fyLabel} — Collected (YTD)`,list:ytdPaidList,color:'text-emerald-700'})} className="card p-4 bg-emerald-50 border-emerald-100 text-left hover:shadow-md transition-shadow">
-            <div className="text-xs text-emerald-600 font-medium mb-1">Collected {fyLabel}</div>
-            <div className="text-xl font-semibold text-emerald-700">{fmt(totalYTD)}</div>
-            <div className="text-xs text-emerald-500 mt-1">{ytdPaidList.length} payments</div>
-          </button>
+          {profile.role==='superadmin'&&(
+            <button onClick={()=>setPaymentDrilldown({title:`${fyLabel} — Collected (YTD)`,list:ytdPaidList,color:'text-emerald-700'})} className="card p-4 bg-emerald-50 border-emerald-100 text-left hover:shadow-md transition-shadow">
+              <div className="text-xs text-emerald-600 font-medium mb-1">Collected {fyLabel}</div>
+              <div className="text-xl font-semibold text-emerald-700">{fmt(totalYTD)}</div>
+              <div className="text-xs text-emerald-500 mt-1">{ytdPaidList.length} payments</div>
+            </button>
+          )}
           <button onClick={()=>setPaymentDrilldown({title:'Pending Payments',list:[...pendingList,...overdueList],color:'text-amber-700'})} className="card p-4 bg-orange-50 border-orange-100 text-left hover:shadow-md transition-shadow">
             <div className="text-xs text-orange-600 font-medium mb-1">Pending</div>
             <div className="text-xl font-semibold text-orange-700">{fmt(pending)}</div>
@@ -1655,13 +1675,29 @@ function renderWeekView(p:any){
   )
 }
 
+// Classes that actually occur on a specific calendar date — the recurring
+// weekly pattern, minus any occurrence moved/cancelled by a schedule
+// exception on that date, plus any occurrence moved IN from elsewhere.
+function classesOnDate(visible:any[], exceptions:any[], date:Date){
+  const dayNames=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
+  const dateStr=date.toISOString().slice(0,10)
+  const dayName=dayNames[date.getDay()]
+  const normal=visible.filter((sc:any)=>sc.day_of_week===dayName&&!exceptions.some((ex:any)=>ex.schedule_id===sc.id&&ex.exception_date===dateStr))
+  const movedIn=(exceptions||[]).filter((ex:any)=>ex.new_date===dateStr).map((ex:any)=>{
+    const sc=visible.find((s:any)=>s.id===ex.schedule_id)
+    if(!sc) return null
+    return {...sc,start_time:ex.new_time||sc.start_time,_moved:true,_exceptionReason:ex.reason}
+  }).filter(Boolean)
+  return [...normal,...movedIn]
+}
+
 function renderDayView(p:any){
   const {visible,selectedDate,setSelectedDate,isTeacher,subById,profiles,
-         students,setReminderCls,setReminderOpen,setSentResult,del} = p
+         students,setReminderCls,setReminderOpen,setSentResult,del,scheduleExceptions} = p
   const dayNames=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
   const dayName=dayNames[selectedDate.getDay()]
   const isHoliday=dayName==='Mon'
-  const dayClasses=[...visible].filter((sc:any)=>sc.day_of_week===dayName)
+  const dayClasses=classesOnDate(visible,scheduleExceptions||[],selectedDate)
     .sort((a:any,b:any)=>a.start_time?.localeCompare(b.start_time))
   return (
     <div className="space-y-3">
@@ -1693,15 +1729,15 @@ function renderDayView(p:any){
               .map((ss:any)=>students.find((st:any)=>st.id===ss.student_id))
               .filter(Boolean)
             return (
-              <div key={c.id} className="card p-4">
+              <div key={c.id+(c._moved?'-moved':'')} className={clsx('card p-4',c._moved&&'ring-1 ring-amber-200')}>
                 <div className="flex items-start justify-between mb-3">
                   <div className="flex items-center gap-3">
                     <div className={clsx('w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0',colorBadge[sub?.color]||colorBadge.violet)}>
                       <span className="font-bold text-sm">{sub?.code}</span>
                     </div>
                     <div>
-                      <div className="font-semibold text-gray-900">{sub?.name}</div>
-                      <div className="text-xs text-gray-400">{c.start_time?.slice(0,5)} · {c.duration_minutes} min</div>
+                      <div className="font-semibold text-gray-900 flex items-center gap-1.5">{sub?.name}{c._moved&&<span className="badge text-xs bg-amber-50 text-amber-700">Rescheduled here</span>}</div>
+                      <div className="text-xs text-gray-400">{c.start_time?.slice(0,5)} · {c.duration_minutes} min{c._moved&&c._exceptionReason?` · ${c._exceptionReason}`:''}</div>
                       {teacher&&<div className="text-xs text-gray-400 mt-0.5">👤 {teacher.full_name}</div>}
                     </div>
                   </div>
@@ -1731,7 +1767,7 @@ function renderDayView(p:any){
 }
 
 function renderMonthView(p:any){
-  const {visible,selectedDate,setSelectedDate,setViewMode,subById}=p
+  const {visible,selectedDate,setSelectedDate,setViewMode,subById,scheduleExceptions}=p
   const year=selectedDate.getFullYear()
   const month=selectedDate.getMonth()
   const firstDay=new Date(year,month,1).getDay()
@@ -1745,8 +1781,7 @@ function renderMonthView(p:any){
   while(cells.length%7!==0) cells.push(null)
 
   function classesOnDay(dayNum:number){
-    const dn=dayNames[new Date(year,month,dayNum).getDay()]
-    return visible.filter((sc:any)=>sc.day_of_week===dn)
+    return classesOnDate(visible,scheduleExceptions||[],new Date(year,month,dayNum))
   }
 
   return (
@@ -1787,8 +1822,8 @@ function renderMonthView(p:any){
                   const sub=subById(c.subject_id)
                   if(!sub) return null
                   return (
-                    <div key={c.id} className={clsx('text-xs px-1 py-0.5 rounded mb-0.5 truncate',colorCell[sub.color]||colorCell.violet)}>
-                      {c.start_time?.slice(0,5)} {sub.code}
+                    <div key={c.id+(c._moved?'-moved':'')} className={clsx('text-xs px-1 py-0.5 rounded mb-0.5 truncate',c._moved?'ring-1 ring-amber-300':'',colorCell[sub.color]||colorCell.violet)}>
+                      {c._moved&&'↪ '}{c.start_time?.slice(0,5)} {sub.code}
                     </div>
                   )
                 })}
@@ -1850,6 +1885,16 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,slotHol
   // Blocked slots
   const [blockedSlots,setBlockedSlots]=useState<any[]>([])
   const [rescheduleRequests,setRescheduleRequests]=useState<any[]>([])
+  // Single-occurrence reschedule overrides — see supabase/add_schedule_exceptions.sql.
+  // A schedule's normal weekly slot is skipped on exception_date and, if new_date
+  // is set, shown there instead — without ever mutating the recurring schedule.
+  const [scheduleExceptions,setScheduleExceptions]=useState<any[]>([])
+  useEffect(()=>{ loadScheduleExceptions() },[])
+  async function loadScheduleExceptions(){
+    const {data,error}=await supabase.from('class_schedule_exceptions').select('*')
+    if(error) console.warn('[class_schedule_exceptions] query failed (table may not exist yet — run add_schedule_exceptions.sql):',error)
+    setScheduleExceptions(data||[])
+  }
   const [reviewModal,setReviewModal]=useState<any>(null)
   const [reviewBusy,setReviewBusy]=useState(false)
   const [reviewNote,setReviewNote]=useState('')
@@ -1875,7 +1920,7 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,slotHol
     const r=await fetch('/api/reschedule',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:reviewModal.id,action,review_note:reviewNote})})
     const d=await r.json()
     setReviewBusy(false)
-    if(r.ok){ setReviewModal(null);setReviewNote('');loadRescheduleRequests();reload() }
+    if(r.ok){ setReviewModal(null);setReviewNote('');loadRescheduleRequests();loadScheduleExceptions();reload() }
     else alert(d.error||'Error reviewing request')
   }
   const [blockModal,setBlockModal]=useState<{day:string,time:string}|null>(null)
@@ -2028,13 +2073,20 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,slotHol
           </div>
           {(slotHolds||[]).map((h:any)=>{
             const subj=subjects.find((s:any)=>s.id===h.subject_id)
+            // Matches the cron's HOLD_WARNING_WINDOW_DAYS — surfaces the same
+            // urgency in-app that the parent/manager email alert already flags.
+            const daysLeft=Math.round((new Date(h.grace_until+'T00:00:00').getTime()-new Date(new Date().toISOString().slice(0,10)+'T00:00:00').getTime())/86400000)
+            const urgent=daysLeft<=3
             return(
-              <div key={h.id} className="flex items-center justify-between px-4 py-3 border-b border-gray-50 last:border-0">
+              <div key={h.id} className={clsx('flex items-center justify-between px-4 py-3 border-b border-gray-50 last:border-0',urgent&&'bg-red-50/40')}>
                 <div className="flex items-center gap-3">
                   <div className={clsx('w-9 h-9 rounded-full flex items-center justify-center text-xs font-semibold flex-shrink-0',ac(0))}>{ini(h.students?.full_name||'?')}</div>
                   <div>
                     <div className="text-sm font-medium text-gray-900">{h.students?.full_name||'Student'}</div>
-                    <div className="text-xs text-gray-400">{subj?.name} · {h.day_of_week} {h.start_time?.slice(0,5)} · held until <strong className="text-orange-600">{h.grace_until}</strong></div>
+                    <div className="text-xs text-gray-400">
+                      {subj?.name} · {h.day_of_week} {h.start_time?.slice(0,5)} · held until <strong className={urgent?'text-red-600':'text-orange-600'}>{h.grace_until}</strong>
+                      {urgent&&<span className="badge text-xs bg-red-100 text-red-700 ml-1.5">{daysLeft<0?'Expired':`${daysLeft}d left`}</span>}
+                    </div>
                   </div>
                 </div>
                 <button onClick={async()=>{await supabase.from('student_slot_holds').update({status:'cancelled'}).eq('id',h.id);reload()}} className="btn btn-sm text-gray-500 hover:bg-gray-50">Release now</button>
@@ -2085,8 +2137,8 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,slotHol
 
       {/* View content */}
       {viewMode==='week'&&renderWeekView({visible,WORKING_DAYS,SLOT_TIMES,isBlocked,toggleBlock,openAddAt,isTeacher,setReminderCls,setReminderOpen,setSentResult,subById,profiles,blockedSlots,centerHours})}
-      {viewMode==='day'&&renderDayView({visible,selectedDate,setSelectedDate,WORKING_DAYS,DAY_LABELS,isTeacher,subById,profiles,students,setReminderCls,setReminderOpen,setSentResult,del})}
-      {viewMode==='month'&&renderMonthView({visible,selectedDate,setSelectedDate,setViewMode,subById})}
+      {viewMode==='day'&&renderDayView({visible,selectedDate,setSelectedDate,WORKING_DAYS,DAY_LABELS,isTeacher,subById,profiles,students,setReminderCls,setReminderOpen,setSentResult,del,scheduleExceptions})}
+      {viewMode==='month'&&renderMonthView({visible,selectedDate,setSelectedDate,setViewMode,subById,scheduleExceptions})}
 
       {/* List view below week */}
       {viewMode==='week'&&(
@@ -2381,7 +2433,9 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,slotHol
               <div className="flex justify-between"><span className="text-gray-400">Subject</span><span className="font-medium">{reviewModal.subjects?.name}</span></div>
               <div className="flex justify-between"><span className="text-gray-400">Current slot</span><span className="font-medium">{reviewModal.current_day||'—'} {reviewModal.current_slot_time?.slice(0,5)||''}</span></div>
               <div className="flex justify-between"><span className="text-gray-400">Requested slot</span><span className="font-semibold text-brand-600">{reviewModal.requested_day} {reviewModal.requested_time?.slice(0,5)}</span></div>
+              {reviewModal.requested_date&&<div className="flex justify-between"><span className="text-gray-400">Class being moved</span><span className="font-medium">{new Date(reviewModal.requested_date+'T00:00:00').toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short'})} only</span></div>}
               {reviewModal.reason&&<div className="pt-2 border-t border-gray-100"><span className="text-gray-400">Reason: </span><span className="italic">{reviewModal.reason}</span></div>}
+              <p className="text-xs text-gray-400 pt-2 border-t border-gray-100">Approving moves only this one class — the weekly recurring slot stays where it is for every other week.</p>
             </div>
             <div>
               <label className="label">Note to student (optional)</label>
@@ -2575,7 +2629,135 @@ function PendingByMonthView({ payments, reload, supabase, sendFineReminder, send
 }
 
 
-function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
+// ══════════════════════════════════════════════════════════════
+// APPROVALS — superadmin-only inbox for requests raised by center
+// managers (currently: invoice delete requests; the pattern is built
+// to extend to other approval types later).
+// ══════════════════════════════════════════════════════════════
+function ApprovalsTab({ profile, onReviewed }: any) {
+  const [requests, setRequests] = useState<any[]>([])
+  const [statusFilter, setStatusFilter] = useState<'pending'|'approved'|'rejected'|'all'>('pending')
+  const [loading, setLoading] = useState(true)
+  const [reviewingReq, setReviewingReq] = useState<any>(null)
+  const [reviewNote, setReviewNote] = useState('')
+  const [reviewBusy, setReviewBusy] = useState(false)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const url = statusFilter === 'all' ? '/api/invoice-delete-requests' : `/api/invoice-delete-requests?status=${statusFilter}`
+      const r = await fetch(url)
+      const d = await r.json()
+      setRequests(d.requests || [])
+    } catch (e) {
+      console.error('[ApprovalsTab] load failed', e)
+    } finally {
+      setLoading(false)
+    }
+  }, [statusFilter])
+
+  useEffect(() => { load() }, [load])
+
+  async function review(action: 'approve'|'reject') {
+    if (!reviewingReq) return
+    setReviewBusy(true)
+    try {
+      const r = await fetch('/api/invoice-delete-requests', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ request_id: reviewingReq.id, action, review_note: reviewNote }),
+      })
+      let d: any = {}
+      try { d = await r.json() } catch { /* non-JSON response */ }
+      if (r.ok) { setReviewingReq(null); setReviewNote(''); load(); onReviewed?.() }
+      else alert(d.error || `Error reviewing request (HTTP ${r.status})`)
+    } catch (e: any) {
+      alert('Network error reviewing request: ' + (e?.message || e))
+    } finally {
+      setReviewBusy(false)
+    }
+  }
+
+  return (
+    <div className="animate-fu">
+      <div className="mb-5">
+        <h1 className="text-xl font-semibold text-gray-900">Approvals</h1>
+        <p className="text-sm text-gray-400 mt-0.5">Requests raised by center managers that need your sign-off — currently invoice deletion requests; more request types will land here as they're added.</p>
+      </div>
+
+      <div className="flex rounded-xl border border-gray-200 overflow-hidden w-fit mb-5">
+        {(['pending','approved','rejected','all'] as const).map(s => (
+          <button key={s} onClick={() => setStatusFilter(s)}
+            className={clsx('px-4 py-2 text-sm font-medium capitalize transition-colors', statusFilter===s ? 'bg-brand-500 text-white' : 'text-gray-500 hover:bg-gray-50')}>
+            {s}
+          </button>
+        ))}
+      </div>
+
+      {loading ? (
+        <div className="text-center text-gray-300 py-16"><Loader2 className="w-6 h-6 animate-spin mx-auto"/></div>
+      ) : requests.length === 0 ? (
+        <div className="card p-10 text-center text-gray-300">No {statusFilter!=='all'?statusFilter:''} requests</div>
+      ) : (
+        <div className="space-y-3">
+          {requests.map((req: any) => (
+            <div key={req.id} className="card p-4 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3 min-w-0">
+                <Avatar name={req.students?.full_name || req.requested_by_name || '?'} i={0}/>
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-gray-900 truncate">
+                    Delete invoice {req.payments?.invoice_number ? `#${req.payments.invoice_number}` : ''} — {req.students?.full_name || 'Unknown student'}
+                  </div>
+                  <div className="text-xs text-gray-400 mt-0.5">
+                    {fmt(req.payments?.amount ?? req.invoice_snapshot?.amount ?? 0)} · Requested by {req.requested_by_name} · {req.created_at ? new Date(req.created_at).toLocaleDateString('en-IN') : '—'}
+                  </div>
+                  {req.reason && <div className="text-xs text-gray-500 italic mt-1">"{req.reason}"</div>}
+                  {req.status !== 'pending' && req.review_note && <div className="text-xs text-gray-400 mt-1">Note: "{req.review_note}"</div>}
+                </div>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <span className={clsx('badge text-xs capitalize',
+                  req.status==='pending' ? 'bg-amber-50 text-amber-700' :
+                  req.status==='approved' ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-500')}>
+                  {req.status}
+                </span>
+                {req.status === 'pending' && (
+                  <button className="btn btn-sm" onClick={() => setReviewingReq(req)}>Review</button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <Modal open={!!reviewingReq} onClose={() => { setReviewingReq(null); setReviewNote('') }} title="Review Delete Request">
+        {reviewingReq && (
+          <div className="space-y-4">
+            <div className="bg-gray-50 rounded-xl p-4 text-sm space-y-1">
+              <div><span className="text-gray-400">Student:</span> <strong>{reviewingReq.students?.full_name || '—'}</strong></div>
+              <div><span className="text-gray-400">Invoice:</span> {reviewingReq.payments?.invoice_number ? `#${reviewingReq.payments.invoice_number}` : '—'}</div>
+              <div><span className="text-gray-400">Amount:</span> {fmt(reviewingReq.payments?.amount ?? reviewingReq.invoice_snapshot?.amount ?? 0)}</div>
+              <div><span className="text-gray-400">Requested by:</span> {reviewingReq.requested_by_name}</div>
+              {reviewingReq.reason && <div><span className="text-gray-400">Reason:</span> "{reviewingReq.reason}"</div>}
+            </div>
+            <div>
+              <label className="label">Review note (optional)</label>
+              <textarea className="input" rows={2} value={reviewNote} onChange={e => setReviewNote(e.target.value)} placeholder="Add a note for the record..."/>
+            </div>
+            <p className="text-xs text-red-500">Approving permanently deletes this invoice. This cannot be undone.</p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button className="btn" onClick={() => review('reject')} disabled={reviewBusy}>Reject</button>
+              <button className="btn-primary bg-red-500 hover:bg-red-600 border-red-500" onClick={() => review('approve')} disabled={reviewBusy}>
+                {reviewBusy ? <Loader2 className="w-4 h-4 animate-spin"/> : null} Approve & Delete
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+    </div>
+  )
+}
+
+function PaymentsTab({payments,students,subjects,fees,perms,profile,reload}:any){
   const supabase=sb()
   const [tab,setTab]=useState('all');const [open,setOpen]=useState(false);const [importOpen,setImportOpen]=useState(false)
   const [viewMode,setViewMode]=useState<'list'|'pending_by_month'>('list')
@@ -2806,8 +2988,11 @@ function PaymentsTab({payments,students,subjects,fees,perms,reload}:any){
         {importResult.startsWith('⏳')&&<Loader2 className="w-4 h-4 animate-spin flex-shrink-0"/>}
         {importResult}
       </div>}
-      <div className="grid grid-cols-5 gap-4 mb-5">
-        <div className="card p-4 bg-emerald-50 border-emerald-100"><div className="text-xs text-emerald-600 mb-1">Collected {fyLabel}</div><div className="text-xl font-semibold text-emerald-700">{fmt(paid)}</div></div>
+      {/* YTD collections card is superadmin-only */}
+      <div className={clsx('grid gap-4 mb-5',profile?.role==='superadmin'?'grid-cols-5':'grid-cols-4')}>
+        {profile?.role==='superadmin'&&(
+          <div className="card p-4 bg-emerald-50 border-emerald-100"><div className="text-xs text-emerald-600 mb-1">Collected {fyLabel}</div><div className="text-xl font-semibold text-emerald-700">{fmt(paid)}</div></div>
+        )}
         <div className="card p-4 bg-amber-50 border-amber-100"><div className="text-xs text-amber-600 mb-1">Pending</div><div className="text-xl font-semibold text-amber-700">{fmt(pending)}</div></div>
         <div className="card p-4 bg-rose-50 border-rose-100"><div className="text-xs text-rose-600 mb-1">Fines Outstanding</div><div className="text-xl font-semibold text-rose-700">{fmt(totalFinesOutstanding)}</div></div>
         <div className="card p-4 bg-red-50 border-red-100"><div className="text-xs text-red-500 mb-1">Failed Txns</div><div className="text-xl font-semibold text-red-600">{failed}</div></div>
@@ -4180,11 +4365,16 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
   // row with N rows sharing the same invoice_number, so reporting/totals still
   // sum correctly without any special-casing elsewhere.
   const [splitTarget, setSplitTarget] = useState<any>(null)
-  const [splitParts, setSplitParts] = useState<{amount:string,mode:string}[]>([])
+  const [splitParts, setSplitParts] = useState<{amount:string,mode:string,date:string}[]>([])
   const [splitBusy, setSplitBusy] = useState(false)
+  const todayStr = new Date().toISOString().slice(0, 10)
   function openSplitModal(p: any) {
     setSplitTarget(p)
-    setSplitParts([{ amount: '', mode: 'UPI' }])
+    // Default each part's date to the invoice's own payment_date (if it already
+    // has one) or today — but it's editable, so a historical/backdated invoice
+    // being split still lands its parts in the correct month for reporting,
+    // instead of always being stamped with today's date.
+    setSplitParts([{ amount: '', mode: 'UPI', date: p.payment_date || todayStr }])
   }
   const splitPartsTotal = splitParts.reduce((sum,pt)=>sum+(parseFloat(pt.amount)||0), 0)
   const splitRemaining = splitTarget ? Math.max(0, splitTarget.amount - splitPartsTotal) : 0
@@ -4195,7 +4385,7 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
     if (splitPartsTotal > splitTarget.amount) { alert(`Split total (${fmt(splitPartsTotal)}) can't exceed the invoice amount (${fmt(splitTarget.amount)})`); return }
 
     setSplitBusy(true)
-    const today = new Date().toISOString().slice(0, 10)
+    const today = todayStr
     const baseDescription = (splitTarget.description || 'Tuition').replace(/ \(Split \d+\/\d+.*?\)$/,'').replace(/ \(Remaining balance\)$/,'')
     const totalParts = validParts.length + (splitRemaining>0?1:0)
     const baseRow = {
@@ -4234,7 +4424,7 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
       amount: parseFloat(firstPart.amount),
       mode_of_payment: firstPart.mode,
       status: 'paid',
-      payment_date: today,
+      payment_date: firstPart.date || today,
       description: `${baseDescription} (Split 1/${totalParts}: ${firstPart.mode})`,
     }).eq('id', splitTarget.id)
     if (updErr) { alert(updErr.message); setSplitBusy(false); return }
@@ -4246,7 +4436,7 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
         amount: parseFloat(pt.amount),
         mode_of_payment: pt.mode,
         status: 'paid',
-        payment_date: today,
+        payment_date: pt.date || today,
         description: `${baseDescription} (Split ${i+2}/${totalParts}: ${pt.mode})`,
       })),
       ...(remainderRow ? [remainderRow] : []),
@@ -4766,6 +4956,9 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
 
             <div className="space-y-2">
               <label className="label">Payments received</label>
+              {/* Each part carries its own date — important for backfilling historical
+                  payments, so a part paid in an earlier month still lands in that
+                  month's collections rather than always being stamped with today. */}
               {splitParts.map((pt, i) => (
                 <div key={i} className="flex items-center gap-2">
                   <input
@@ -4787,12 +4980,19 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
                     <option value="Bank Transfer">Bank Transfer</option>
                     <option value="Cheque">Cheque</option>
                   </select>
+                  <input
+                    className="input w-40"
+                    type="date"
+                    title="Date this part was actually paid"
+                    value={pt.date || todayStr}
+                    onChange={e=>setSplitParts(parts=>parts.map((x,idx)=>idx===i?{...x,date:e.target.value}:x))}
+                  />
                   {splitParts.length > 1 && (
                     <button className="btn btn-sm text-red-500" onClick={()=>setSplitParts(parts=>parts.filter((_,idx)=>idx!==i))}><Trash2 className="w-3 h-3"/></button>
                   )}
                 </div>
               ))}
-              <button className="btn btn-sm" onClick={()=>setSplitParts(parts=>[...parts,{amount:'',mode:'UPI'}])}><Plus className="w-3 h-3"/> Add another mode</button>
+              <button className="btn btn-sm" onClick={()=>setSplitParts(parts=>[...parts,{amount:'',mode:'UPI',date:splitTarget.payment_date||todayStr}])}><Plus className="w-3 h-3"/> Add another mode</button>
             </div>
 
             <div className="flex justify-between items-center px-4 py-2.5 rounded-xl text-sm bg-blue-50 border border-blue-100">
@@ -5445,7 +5645,8 @@ function DonutChart({ data, total }: { data: { label: string; value: number; col
   )
 }
 
-function ReportsTab({ students, subjects, payments, profiles, attendance, reload }: any) {
+function ReportsTab({ students, subjects, payments, profiles, attendance, profile, reload }: any) {
+  const isSuperadmin = profile?.role === 'superadmin'
   const [activeReport, setActiveReport] = useState<string>('students_status')
   const [paymentDrilldown, setPaymentDrilldown] = useState<{title:string;list:any[];color:string}|null>(null)
 
@@ -5556,7 +5757,7 @@ function ReportsTab({ students, subjects, payments, profiles, attendance, reload
     { id: 'students_grade',      label: 'Students by Grade',      group: 'Student Reports' },
     { id: 'students_payment',    label: 'Students by Payment',    group: 'Student Reports' },
     { id: 'payment_monthly',     label: 'Monthly Collection',     group: 'Payment Reports' },
-    { id: 'payment_ytd',         label: 'Year to Date',           group: 'Payment Reports' },
+    ...(isSuperadmin ? [{ id: 'payment_ytd', label: 'Year to Date', group: 'Payment Reports' }] : []),
     { id: 'payment_mode',        label: 'Payment by Mode',        group: 'Payment Reports' },
     { id: 'payment_subject',     label: 'Revenue by Subject',     group: 'Payment Reports' },
     { id: 'payment_forecast',    label: 'Revenue Forecast',       group: 'Payment Reports' },
@@ -5637,10 +5838,10 @@ function ReportsTab({ students, subjects, payments, profiles, attendance, reload
           <h1 className="text-xl font-semibold text-gray-900">Reports</h1>
           <p className="text-sm text-gray-400 mt-0.5">Analytics & insights</p>
         </div>
-        {/* Summary pills */}
+        {/* Summary pills — YTD is superadmin-only */}
         <div className="flex gap-2 text-xs">
           <button onClick={() => setPaymentDrilldown({title:'Month to Date — Collected', list:mtdPayments, color:'text-amber-700'})} className="px-3 py-1.5 bg-amber-50 text-amber-700 rounded-lg font-medium hover:bg-amber-100 transition-colors">MTD: {fmt(totalMTD)}</button>
-          <button onClick={() => setPaymentDrilldown({title:`${fyLabel} — Collected (YTD)`, list:ytdPayments, color:'text-emerald-700'})} className="px-3 py-1.5 bg-emerald-50 text-emerald-700 rounded-lg font-medium hover:bg-emerald-100 transition-colors">YTD: {fmt(totalYTD)}</button>
+          {isSuperadmin&&<button onClick={() => setPaymentDrilldown({title:`${fyLabel} — Collected (YTD)`, list:ytdPayments, color:'text-emerald-700'})} className="px-3 py-1.5 bg-emerald-50 text-emerald-700 rounded-lg font-medium hover:bg-emerald-100 transition-colors">YTD: {fmt(totalYTD)}</button>}
           <button onClick={() => setPaymentDrilldown({title:'All-Time Collected', list:paidPayments, color:'text-brand-700'})} className="px-3 py-1.5 bg-brand-50 text-brand-700 rounded-lg font-medium hover:bg-brand-100 transition-colors">Ever: {fmt(totalEver)}</button>
         </div>
       </div>
@@ -5649,7 +5850,9 @@ function ReportsTab({ students, subjects, payments, profiles, attendance, reload
         {[
           { label:'Active Students', val:activeStudents, sub:`${inactiveStudents} inactive`, color:'bg-blue-50 text-blue-700' },
           { label:'Subjects Offered', val:subjects.length, sub:`${Object.keys(studentsBySubject).length} with students`, color:'bg-violet-50 text-violet-700' },
-          { label:'Collected YTD', val:fmt(totalYTD), sub:fyLabel, color:'bg-emerald-50 text-emerald-700', onClick:()=>setPaymentDrilldown({title:`${fyLabel} — Collected (YTD)`,list:ytdPayments,color:'text-emerald-700'}) },
+          isSuperadmin
+            ? { label:'Collected YTD', val:fmt(totalYTD), sub:fyLabel, color:'bg-emerald-50 text-emerald-700', onClick:()=>setPaymentDrilldown({title:`${fyLabel} — Collected (YTD)`,list:ytdPayments,color:'text-emerald-700'}) }
+            : { label:'Collected MTD', val:fmt(totalMTD), sub:'This month', color:'bg-emerald-50 text-emerald-700', onClick:()=>setPaymentDrilldown({title:'Month to Date — Collected',list:mtdPayments,color:'text-emerald-700'}) },
           { label:'Attendance Rate', val:attPresent+attAbsent+attBillable>0?`${Math.round(attPresent/(attPresent+attAbsent+attBillable)*100)}%`:'—', sub:`${attPresent} present · ${attBillable} billable`, color:'bg-amber-50 text-amber-700' },
         ].map(m => (
           m.onClick ? (
@@ -5857,6 +6060,7 @@ function ReportsTab({ students, subjects, payments, profiles, attendance, reload
               fyLabel={fyLabel}
               exportCSV={exportCSV}
               MonthChart={MonthChart}
+              isSuperadmin={isSuperadmin}
             />
           )}
 
@@ -5907,6 +6111,7 @@ function ReportsTab({ students, subjects, payments, profiles, attendance, reload
               fyLabel={fyLabel}
               exportCSV={exportCSV}
               BarChart={BarChart}
+              isSuperadmin={isSuperadmin}
             />
           )}
 
@@ -6247,8 +6452,8 @@ function StudentsByInstrumentReport({ subjects, students, studentsBySubject, exp
 // ══════════════════════════════════════════════════════════════
 // REVENUE BY SUBJECT — YTD / MTD toggle
 // ══════════════════════════════════════════════════════════════
-function RevenueBySubjectReport({ bySubjectYTD, bySubjectMTD, fyLabel, exportCSV, BarChart }: any) {
-  const [period, setPeriod] = useState<'ytd' | 'mtd'>('ytd')
+function RevenueBySubjectReport({ bySubjectYTD, bySubjectMTD, fyLabel, exportCSV, BarChart, isSuperadmin }: any) {
+  const [period, setPeriod] = useState<'ytd' | 'mtd'>(isSuperadmin ? 'ytd' : 'mtd')
   const data = period === 'ytd' ? bySubjectYTD : bySubjectMTD
   const total: number = Object.values(data).reduce((a: number, v: any) => a + v, 0) as number
 
@@ -6259,17 +6464,21 @@ function RevenueBySubjectReport({ bySubjectYTD, bySubjectMTD, fyLabel, exportCSV
         <button onClick={() => exportCSV(Object.entries(data).map(([Subject,Amount]) => ({Subject,Amount})), `revenue_by_subject_${period}.csv`)} className="btn btn-sm"><Download className="w-3 h-3"/> Export</button>
       </div>
 
-      {/* Period toggle */}
-      <div className="flex rounded-xl border border-gray-200 overflow-hidden w-fit mb-5">
-        <button onClick={() => setPeriod('mtd')}
-          className={clsx('px-4 py-2 text-sm font-medium transition-colors', period==='mtd' ? 'bg-amber-500 text-white' : 'text-gray-500 hover:bg-gray-50')}>
-          Month to Date
-        </button>
-        <button onClick={() => setPeriod('ytd')}
-          className={clsx('px-4 py-2 text-sm font-medium transition-colors', period==='ytd' ? 'bg-emerald-500 text-white' : 'text-gray-500 hover:bg-gray-50')}>
-          {fyLabel} (YTD)
-        </button>
-      </div>
+      {/* Period toggle — YTD is superadmin-only */}
+      {isSuperadmin ? (
+        <div className="flex rounded-xl border border-gray-200 overflow-hidden w-fit mb-5">
+          <button onClick={() => setPeriod('mtd')}
+            className={clsx('px-4 py-2 text-sm font-medium transition-colors', period==='mtd' ? 'bg-amber-500 text-white' : 'text-gray-500 hover:bg-gray-50')}>
+            Month to Date
+          </button>
+          <button onClick={() => setPeriod('ytd')}
+            className={clsx('px-4 py-2 text-sm font-medium transition-colors', period==='ytd' ? 'bg-emerald-500 text-white' : 'text-gray-500 hover:bg-gray-50')}>
+            {fyLabel} (YTD)
+          </button>
+        </div>
+      ) : (
+        <div className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-5">Month to Date</div>
+      )}
 
       <div className={clsx('rounded-xl p-4 mb-5 border', period==='ytd' ? 'bg-emerald-50 border-emerald-100' : 'bg-amber-50 border-amber-100')}>
         <div className={clsx('text-xs font-semibold uppercase tracking-wide', period==='ytd' ? 'text-emerald-600' : 'text-amber-600')}>
@@ -6363,7 +6572,9 @@ function collapseInvoices(payments: any[]): { anchor: string; amount: number; mo
 // student's picked class slot(s) can be committed now, or must be held
 // (reserved for them only) pending payment. See supabase/add_slot_holds.sql.
 // ══════════════════════════════════════════════════════════════
-const SLOT_HOLD_GRACE_DAYS = 15
+// Max time an unpaid slot stays reserved for one student before it's released
+// back to the free pool for anyone else to book — 2 weeks per academy policy.
+const SLOT_HOLD_GRACE_DAYS = 14
 
 function addDaysToDateStr(dateStr: string, days: number): string {
   const d = new Date(dateStr + 'T00:00:00')
@@ -6599,7 +6810,7 @@ function RevenueForecastReport({ students, subjects, payments, exportCSV }: any)
   )
 }
 
-function MonthlyBreakdownReport({ paidPayments, last12Months, monthlyCollection, totalYTD, totalMTD, fyLabel, exportCSV, MonthChart }: any) {
+function MonthlyBreakdownReport({ paidPayments, last12Months, monthlyCollection, totalYTD, totalMTD, fyLabel, exportCSV, MonthChart, isSuperadmin }: any) {
   const [selectedMonth, setSelectedMonth] = useState<string | null>(null)
 
   const monthStudents = selectedMonth
@@ -6643,16 +6854,18 @@ function MonthlyBreakdownReport({ paidPayments, last12Months, monthlyCollection,
         </div>
       </div>
 
-      {/* YTD / MTD summary */}
-      <div className="grid grid-cols-2 gap-4 mb-5">
+      {/* MTD summary — YTD is superadmin-only */}
+      <div className={clsx('grid gap-4 mb-5',isSuperadmin?'grid-cols-2':'grid-cols-1')}>
         <div className="bg-amber-50 border border-amber-100 rounded-xl p-4">
           <div className="text-xs text-amber-600 font-semibold uppercase tracking-wide">Month to Date</div>
           <div className="text-2xl font-bold text-amber-700 mt-1">{fmt(totalMTD)}</div>
         </div>
-        <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4">
-          <div className="text-xs text-emerald-600 font-semibold uppercase tracking-wide">{fyLabel} (Year to Date)</div>
-          <div className="text-2xl font-bold text-emerald-700 mt-1">{fmt(totalYTD)}</div>
-        </div>
+        {isSuperadmin&&(
+          <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4">
+            <div className="text-xs text-emerald-600 font-semibold uppercase tracking-wide">{fyLabel} (Year to Date)</div>
+            <div className="text-2xl font-bold text-emerald-700 mt-1">{fmt(totalYTD)}</div>
+          </div>
+        )}
       </div>
 
       {/* Bar chart — clickable bars */}

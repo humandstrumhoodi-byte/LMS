@@ -48,6 +48,21 @@ async function isSubjectPaidNow(svc: any, studentId: string, subjectId: string):
   return anchor <= todayStr && end.toISOString().slice(0, 10) >= todayStr
 }
 
+const DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
+
+// Next calendar date (today or later) that falls on the given day-of-week name.
+// This is what makes the reschedule a single-instance move: it identifies the
+// ONE upcoming occurrence being changed, rather than the recurring weekly slot.
+function nextOccurrenceOf(dayName: string): string {
+  const targetIdx = DOW.indexOf(dayName)
+  const d = new Date()
+  if (targetIdx >= 0) {
+    const delta = (targetIdx - d.getDay() + 7) % 7
+    d.setDate(d.getDate() + delta)
+  }
+  return d.toISOString().slice(0, 10)
+}
+
 export async function POST(req: NextRequest) {
   const svc = await serviceSB()
   const body = await req.json()
@@ -62,6 +77,9 @@ export async function POST(req: NextRequest) {
     const { data: sched } = await svc.from('class_schedules').select('day_of_week, start_time, subject_id').eq('id', schedule_id).single()
     if (sched) { currentDay = sched.day_of_week; currentSlotTime = sched.start_time; subjectId = sched.subject_id }
   }
+  // The specific upcoming date of the class being moved — this is what lets
+  // approval create a one-date exception instead of shifting every future week.
+  const requestedDate = currentDay ? nextOccurrenceOf(currentDay) : null
 
   if (schedule_id) {
     const { data: existing } = await svc.from('reschedule_requests').select('id').eq('student_id', studentId).eq('schedule_id', schedule_id).eq('status', 'pending').maybeSingle()
@@ -85,7 +103,7 @@ export async function POST(req: NextRequest) {
   const { data: request, error } = await svc.from('reschedule_requests').insert({
     student_id: studentId, schedule_id: schedule_id || null, subject_id: subjectId,
     current_day: currentDay, current_slot_time: currentSlotTime,
-    requested_day, requested_time, reason: reason || null, status: 'pending',
+    requested_day, requested_time, requested_date: requestedDate, reason: reason || null, status: 'pending',
   }).select().single()
 
   if (error) return NextResponse.json({ error: error.message }, { status: 400 })
