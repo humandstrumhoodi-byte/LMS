@@ -22,7 +22,10 @@ CREATE TABLE IF NOT EXISTS public.class_schedule_exceptions (
 
 ALTER TABLE public.class_schedule_exceptions ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "cse_read"  ON public.class_schedule_exceptions FOR SELECT TO authenticated USING (true);
+DROP POLICY IF EXISTS "cse_read" ON public.class_schedule_exceptions;
+CREATE POLICY "cse_read" ON public.class_schedule_exceptions FOR SELECT TO authenticated USING (true);
+
+DROP POLICY IF EXISTS "cse_write" ON public.class_schedule_exceptions;
 CREATE POLICY "cse_write" ON public.class_schedule_exceptions FOR ALL TO authenticated
   USING (my_role() IN ('superadmin','center_manager'))
   WITH CHECK (my_role() IN ('superadmin','center_manager'));
