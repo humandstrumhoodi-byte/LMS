@@ -167,5 +167,114 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ ok: true, sent, skipped, failed, markedOverdue, totalCandidates: candidates.length })
+  const holdResults = await processSlotHolds(svc, sendMail)
+
+  return NextResponse.json({ ok: true, sent, skipped, failed, markedOverdue, totalCandidates: candidates.length, slotHolds: holdResults })
+}
+
+// ── Slot-hold expiry alerts + auto-release ──────────────────────────────
+// An unpaid enrollment's picked class slot is held exclusively for that
+// student for SLOT_HOLD_GRACE_DAYS (2 weeks — see DashboardShell's
+// SLOT_HOLD_GRACE_DAYS). This closes the loop on that policy: warn everyone
+// before a hold lapses, then actually release it back to the free pool
+// (status -> 'released') the day it expires, instead of leaving it stuck
+// as 'held' forever with no one told.
+const SLOT_HOLD_GRACE_DAYS = 14
+const HOLD_WARNING_WINDOW_DAYS = 3 // send the "expiring soon" alert once the hold has this many days or fewer left
+
+async function processSlotHolds(svc: any, sendMail: (to: string, subject: string, html: string) => Promise<boolean>) {
+  const { data: holds, error } = await svc
+    .from('student_slot_holds')
+    .select('*, students(full_name, email, phone, guardian_name, guardian_email), subjects(name, code)')
+    .eq('status', 'held')
+  if (error || !holds?.length) return { warned: 0, released: 0 }
+
+  const todayStr = new Date().toISOString().slice(0, 10)
+  const today = new Date(todayStr + 'T00:00:00')
+
+  const { data: managers } = await svc.from('profiles').select('email, full_name').in('role', ['center_manager', 'superadmin'])
+  const managerEmails = (managers || []).map((m: any) => m.email).filter(Boolean)
+
+  let warned = 0, released = 0
+  const expiringNow: any[] = []
+  const releasedNow: any[] = []
+
+  for (const hold of holds) {
+    const graceDate = new Date(hold.grace_until + 'T00:00:00')
+    const daysLeft = Math.round((graceDate.getTime() - today.getTime()) / 86400000)
+
+    if (daysLeft < 0) {
+      // Grace period lapsed — release the slot back to the free pool.
+      await svc.from('student_slot_holds').update({ status: 'released' }).eq('id', hold.id)
+      released++
+      releasedNow.push(hold)
+
+      const student = hold.students
+      const subject = hold.subjects
+      const parentEmail = student?.guardian_email || student?.email
+      if (parentEmail) {
+        const html = `<div style="font-family:sans-serif;max-width:480px;margin:0 auto">
+          <div style="background:#dc2626;padding:18px 22px;border-radius:10px 10px 0 0"><div style="color:white;font-weight:700;font-size:16px">⏰ Reserved Slot Released</div></div>
+          <div style="background:white;padding:20px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 10px 10px">
+            <p style="color:#374151">Hi ${student?.guardian_name || student?.full_name || 'there'},</p>
+            <p style="color:#374151">The class slot reserved for ${student?.full_name || 'your child'}'s <strong>${subject?.name || 'class'}</strong> (${hold.day_of_week} ${hold.start_time?.slice(0,5)}) was held for ${SLOT_HOLD_GRACE_DAYS} days pending payment and has now been released back to general availability since payment wasn't completed in time.</p>
+            <p style="color:#374151">If you'd still like to enroll, please contact us to check current slot availability and complete payment.</p>
+            <p style="color:#9ca3af;font-size:11px;margin-top:16px">Hum &amp; Strum · Hoodi, Bengaluru</p>
+          </div>
+        </div>`
+        await sendMail(parentEmail, `⏰ Reserved slot released — ${subject?.name || 'class'} (${student?.full_name || ''})`, html)
+      }
+    } else if (daysLeft <= HOLD_WARNING_WINDOW_DAYS && !hold.expiry_alert_sent_at) {
+      // Approaching expiry and no warning sent yet — nudge the parent, once.
+      await svc.from('student_slot_holds').update({ expiry_alert_sent_at: new Date().toISOString() }).eq('id', hold.id)
+      warned++
+      expiringNow.push(hold)
+
+      const student = hold.students
+      const subject = hold.subjects
+      const parentEmail = student?.guardian_email || student?.email
+      if (parentEmail) {
+        const html = `<div style="font-family:sans-serif;max-width:480px;margin:0 auto">
+          <div style="background:#d97706;padding:18px 22px;border-radius:10px 10px 0 0"><div style="color:white;font-weight:700;font-size:16px">⚠️ Your Reserved Slot Is Expiring</div></div>
+          <div style="background:white;padding:20px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 10px 10px">
+            <p style="color:#374151">Hi ${student?.guardian_name || student?.full_name || 'there'},</p>
+            <p style="color:#374151">${student?.full_name || 'Your'}'s <strong>${subject?.name || 'class'}</strong> slot (${hold.day_of_week} ${hold.start_time?.slice(0,5)}) is being held for you, but payment hasn't been received yet. This hold expires in <strong>${daysLeft} day${daysLeft===1?'':'s'}</strong> (on ${hold.grace_until}) — after that, the slot is released for other students.</p>
+            <p style="color:#374151">Please complete payment soon to keep this slot.</p>
+            <p style="color:#9ca3af;font-size:11px;margin-top:16px">Hum &amp; Strum · Hoodi, Bengaluru</p>
+          </div>
+        </div>`
+        await sendMail(parentEmail, `⚠️ ${student?.full_name || 'A'} slot expires in ${daysLeft} day${daysLeft===1?'':'s'} — ${subject?.name || 'class'}`, html)
+      }
+    }
+  }
+
+  // One roll-up alert to center managers/superadmin covering everything that
+  // changed today, rather than one email per hold.
+  if (managerEmails.length && (expiringNow.length || releasedNow.length)) {
+    const rows = (list: any[], label: string, color: string) => list.length ? `
+      <div style="margin-bottom:14px">
+        <div style="font-size:12px;font-weight:700;color:${color};margin-bottom:6px">${label} (${list.length})</div>
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          ${list.map(h => `<tr style="border-bottom:1px solid #f3f4f6">
+            <td style="padding:5px 0">${h.students?.full_name || 'Student'}</td>
+            <td style="padding:5px 0;color:#6b7280">${h.subjects?.name || ''}</td>
+            <td style="padding:5px 0;color:#6b7280">${h.day_of_week} ${h.start_time?.slice(0,5)}</td>
+            <td style="padding:5px 0;color:#6b7280;text-align:right">${h.grace_until}</td>
+          </tr>`).join('')}
+        </table>
+      </div>` : ''
+    const html = `<div style="font-family:sans-serif;max-width:560px;margin:0 auto">
+      <div style="background:#3B1F8C;padding:18px 22px;border-radius:10px 10px 0 0"><div style="color:white;font-weight:700;font-size:16px">🔔 Slot Hold Alerts</div></div>
+      <div style="background:white;padding:20px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 10px 10px">
+        ${rows(expiringNow, 'Expiring within ' + HOLD_WARNING_WINDOW_DAYS + ' days', '#d97706')}
+        ${rows(releasedNow, 'Released today — slot now free', '#dc2626')}
+        <p style="color:#9ca3af;font-size:11px;margin-top:8px">Hum &amp; Strum · Automated daily check</p>
+      </div>
+    </div>`
+    for (const email of managerEmails) {
+      await sendMail(email, `🔔 ${expiringNow.length} expiring, ${releasedNow.length} released — slot holds`, html)
+    }
+  }
+
+  return { warned, released }
 }
