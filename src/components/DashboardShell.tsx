@@ -5783,6 +5783,7 @@ function ReportsTab({ students, subjects, payments, profiles, attendance, profil
     { id: 'students_status',     label: 'Students by Status',     group: 'Student Reports' },
     { id: 'students_inactive',   label: 'Inactive Students',      group: 'Student Reports' },
     { id: 'students_instrument', label: 'Students by Instrument', group: 'Student Reports' },
+    { id: 'students_monthly',    label: 'Monthly Enrollment',     group: 'Student Reports' },
     { id: 'students_grade',      label: 'Students by Grade',      group: 'Student Reports' },
     { id: 'students_payment',    label: 'Students by Payment',    group: 'Student Reports' },
     { id: 'payment_monthly',     label: 'Monthly Collection',     group: 'Payment Reports' },
@@ -6040,6 +6041,10 @@ function ReportsTab({ students, subjects, payments, profiles, attendance, profil
               BarChart={BarChart}
               reload={reload}
             />
+          )}
+
+          {activeReport === 'students_monthly' && (
+            <StudentsByJoinMonthReport students={students} subjects={subjects} exportCSV={exportCSV}/>
           )}
 
           {activeReport === 'students_payment' && (
@@ -6474,6 +6479,132 @@ function StudentsByInstrumentReport({ subjects, students, studentsBySubject, exp
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════
+// STUDENTS BY JOIN MONTH — cross-tabbed by status label and by instrument
+// There's no historical record of a student's status/instrument in past
+// months (students only carry their CURRENT status/subjects), so "monthly"
+// here buckets each student once, by the month they joined (joined_date),
+// then breaks that month's cohort down by their current status and
+// instrument(s). A student who later changed subject or status shows up
+// under their join month with today's status/instrument, not what they had
+// when they actually joined.
+// ══════════════════════════════════════════════════════════════
+function StudentsByJoinMonthReport({ students, subjects, exportCSV }: any) {
+  const monthKeys = Array.from(new Set(
+    students.map((s: any) => s.joined_date).filter(Boolean).map((d: string) => d.slice(0, 7))
+  )).sort() as string[]
+
+  const monthly = monthKeys.map(mk => {
+    const inMonth = students.filter((s: any) => s.joined_date?.slice(0, 7) === mk)
+    const byLabel: Record<string, number> = {}
+    STUDENT_STATUSES.forEach(st => {
+      const c = inMonth.filter((s: any) => (s.status || 'Active') === st.value).length
+      if (c) byLabel[st.label] = c
+    })
+    const byInstrument: Record<string, number> = {}
+    inMonth.forEach((s: any) => {
+      (s.student_subjects || []).forEach((ss: any) => {
+        const subj = subjects.find((sub: any) => sub.id === ss.subject_id)
+        const name = subj?.name || 'Unknown'
+        byInstrument[name] = (byInstrument[name] || 0) + 1
+      })
+    })
+    return { month: mk, total: inMonth.length, byLabel, byInstrument }
+  }).reverse() // most recent join month first
+
+  const allLabels = STUDENT_STATUSES.map(st => st.label)
+  const allInstruments = subjects.map((s: any) => s.name)
+
+  function monthName(mk: string) {
+    return new Date(mk + '-01T00:00:00').toLocaleString('en-IN', { month: 'short', year: 'numeric' })
+  }
+
+  function exportLabelTable() {
+    const rows = monthly.map(m => {
+      const row: Record<string, any> = { Month: monthName(m.month), Total: m.total }
+      allLabels.forEach(l => { row[l] = m.byLabel[l] || 0 })
+      return row
+    })
+    exportCSV(rows, 'students_by_month_and_status.csv')
+  }
+  function exportInstrumentTable() {
+    const rows = monthly.map(m => {
+      const row: Record<string, any> = { Month: monthName(m.month), Total: m.total }
+      allInstruments.forEach((i: string) => { row[i] = m.byInstrument[i] || 0 })
+      return row
+    })
+    exportCSV(rows, 'students_by_month_and_instrument.csv')
+  }
+
+  if (!monthly.length) return <div className="text-center py-10 text-gray-300">No students with a join date on file yet</div>
+
+  return (
+    <div>
+      <div className="mb-1">
+        <h2 className="font-semibold text-gray-900">Students by Join Month</h2>
+        <p className="text-xs text-gray-400 mt-0.5">Each student is counted once, in the month they joined — broken down by their current status and instrument(s).</p>
+      </div>
+
+      {/* By status */}
+      <div className="mt-5">
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-sm font-semibold text-gray-700">By Status</h3>
+          <button onClick={exportLabelTable} className="btn btn-sm"><Download className="w-3 h-3"/> Export</button>
+        </div>
+        <div className="overflow-x-auto border border-gray-100 rounded-xl">
+          <table className="w-full text-sm whitespace-nowrap">
+            <thead>
+              <tr>
+                <th className="th">Month</th>
+                <th className="th text-right">Total</th>
+                {allLabels.map(l => <th key={l} className="th text-right">{l}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {monthly.map(m => (
+                <tr key={m.month} className="hover:bg-gray-50/50">
+                  <td className="td font-medium">{monthName(m.month)}</td>
+                  <td className="td text-right font-semibold">{m.total}</td>
+                  {allLabels.map(l => <td key={l} className="td text-right text-gray-500">{m.byLabel[l] || 0}</td>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* By instrument */}
+      <div className="mt-8">
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-sm font-semibold text-gray-700">By Instrument</h3>
+          <button onClick={exportInstrumentTable} className="btn btn-sm"><Download className="w-3 h-3"/> Export</button>
+        </div>
+        <div className="overflow-x-auto border border-gray-100 rounded-xl">
+          <table className="w-full text-sm whitespace-nowrap">
+            <thead>
+              <tr>
+                <th className="th">Month</th>
+                <th className="th text-right">Total</th>
+                {allInstruments.map((i: string) => <th key={i} className="th text-right">{i}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {monthly.map(m => (
+                <tr key={m.month} className="hover:bg-gray-50/50">
+                  <td className="td font-medium">{monthName(m.month)}</td>
+                  <td className="td text-right font-semibold">{m.total}</td>
+                  {allInstruments.map((i: string) => <td key={i} className="td text-right text-gray-500">{m.byInstrument[i] || 0}</td>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="text-xs text-gray-400 mt-1.5">A student enrolled in more than one instrument is counted once per instrument, so instrument totals can exceed that month's student total.</p>
+      </div>
     </div>
   )
 }
