@@ -445,7 +445,7 @@ function DashboardShellInner({profile}:{profile:Profile}){
           {tab==='teachers'&&<TeachersTab profiles={profiles} subjects={subjects} reload={load}/>}
           {tab==='subjects'&&<SubjectsTab subjects={subjects} profiles={profiles} students={students} fees={fees} subjectTeachers={subjectTeachers} reload={load}/>}
           {tab==='packages'&&<PackagesTab packages={packages} subjects={subjects} reload={load}/>}
-          {tab==='schedule'&&<ScheduleTab schedules={schedules} subjects={subjects} students={students} profiles={profiles} profile={profile} perms={perms} slotHolds={slotHolds} reload={load}/>}
+          {tab==='schedule'&&<ScheduleTab schedules={schedules} subjects={subjects} students={students} profiles={profiles} profile={profile} perms={perms} slotHolds={slotHolds} payments={payments} packages={packages} reload={load}/>}
           {tab==='fees'&&<FeesTab subjects={subjects} fees={fees} reload={load}/>}
           {tab==='payments'&&<PaymentsTab payments={payments} students={students} subjects={subjects} fees={fees} perms={perms} profile={profile} reload={load}/>}
           {tab==='reports'&&<ReportsTab students={students} subjects={subjects} payments={payments} profiles={profiles} attendance={attendance} profile={profile} reload={load}/>}
@@ -1555,7 +1555,7 @@ function SubjectsTab({subjects,profiles,students,fees,subjectTeachers,reload}:an
 
 function renderWeekView(p:any){
   const {visible,WORKING_DAYS,SLOT_TIMES,isBlocked,toggleBlock,openAddAt,isTeacher,
-         setReminderCls,setReminderOpen,setSentResult,subById,profiles,centerHours} = p
+         setReminderCls,setReminderOpen,setSentResult,setAddStudentError,subById,profiles,centerHours} = p
   const todayAbbr = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date().getDay()]
   // Same fallback hours used elsewhere in this tab — without this, isWithinHours
   // silently treats every slot as "closed" whenever centerHours hasn't loaded yet
@@ -1652,7 +1652,7 @@ function renderWeekView(p:any){
                           return (
                             <div key={c.id}
                               className={clsx('rounded-lg px-2 py-1.5 mb-0.5 text-xs font-medium cursor-pointer hover:opacity-80 border',colorCell[sub.color]||colorCell.violet)}
-                              onClick={e=>{e.stopPropagation();setReminderCls(c);setReminderOpen(true);setSentResult('')}}>
+                              onClick={e=>{e.stopPropagation();setReminderCls(c);setReminderOpen(true);setSentResult('');setAddStudentError('')}}>
                               <div className="font-semibold truncate">{sub.name}</div>
                               <div className="opacity-70">{c.duration_minutes}m · {stuCount} stu</div>
                               {teacher&&<div className="opacity-60 truncate">{teacher.full_name.split(' ')[0]}</div>}
@@ -1693,7 +1693,7 @@ function classesOnDate(visible:any[], exceptions:any[], date:Date){
 
 function renderDayView(p:any){
   const {visible,selectedDate,setSelectedDate,isTeacher,subById,profiles,
-         students,setReminderCls,setReminderOpen,setSentResult,del,scheduleExceptions} = p
+         students,setReminderCls,setReminderOpen,setSentResult,setAddStudentError,del,scheduleExceptions} = p
   const dayNames=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
   const dayName=dayNames[selectedDate.getDay()]
   const isHoliday=dayName==='Mon'
@@ -1742,7 +1742,7 @@ function renderDayView(p:any){
                     </div>
                   </div>
                   <div className="flex gap-1">
-                    <button onClick={()=>{setReminderCls(c);setReminderOpen(true);setSentResult('')}} className="btn btn-sm text-brand-600 border-brand-200">
+                    <button onClick={()=>{setReminderCls(c);setReminderOpen(true);setSentResult('');setAddStudentError('')}} className="btn btn-sm text-brand-600 border-brand-200">
                       <Mail className="w-3 h-3"/>
                     </button>
                     {!isTeacher&&<button onClick={()=>del(c.id)} className="btn btn-sm btn-danger"><Trash2 className="w-3 h-3"/></button>}
@@ -1838,7 +1838,7 @@ function renderMonthView(p:any){
 }
 
 
-function ScheduleTab({schedules,subjects,students,profiles,profile,perms,slotHolds,reload}:any){
+function ScheduleTab({schedules,subjects,students,profiles,profile,perms,slotHolds,payments,packages,reload}:any){
   const supabase=sb()
   const isTeacher=profile.role==='teacher'
 
@@ -1859,13 +1859,41 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,slotHol
   const [sentResult,setSentResult]=useState('')
   const [addStudentQuery,setAddStudentQuery]=useState('')
   const [addingStudentId,setAddingStudentId]=useState<string|null>(null)
+  const [addStudentError,setAddStudentError]=useState('')
+  // Same invoice-gating rule the enrollment flow uses (see commitOrHoldSubjectSlots /
+  // isSubjectPaidNow / slotsRequiredForPackage below) — adding a student directly from
+  // the Schedule tab must not bypass "is this subject actually paid for" and "does this
+  // student still have a free weekly slot on their package" the way a raw insert did.
   async function addStudentToClass(studentId:string){
     if(!reminderCls)return
+    setAddStudentError('')
+    const subjectId=reminderCls.subject_id
+    const todayStr=new Date().toISOString().slice(0,10)
+
+    if(!isSubjectPaidNow(studentId,subjectId,payments||[],todayStr)){
+      setAddStudentError('This student has no active paid invoice for this subject — add them via Students → Enroll instead, which will hold the slot until payment.')
+      return
+    }
+
+    const paidForSubject=(payments||[]).filter((p:any)=>p.student_id===studentId&&p.subject_id===subjectId&&p.status==='paid')
+    const invoices=collapseInvoices(paidForSubject).sort((a:any,b:any)=>b.anchor.localeCompare(a.anchor))
+    const latestInvoice=invoices[0]
+    const pkg=(packages||[]).find((pk:any)=>pk.id===latestInvoice?.raw?.package_id)
+    const slotsAllowed=slotsRequiredForPackage(pkg)
+    const slotsAlready=(schedules||[]).filter((sc:any)=>sc.subject_id===subjectId&&(sc.schedule_students||[]).some((ss:any)=>ss.student_id===studentId)).length
+
+    if(slotsAlready>=slotsAllowed){
+      setAddStudentError(`Student already has ${slotsAlready} of ${slotsAllowed} weekly slot${slotsAllowed!==1?'s':''} paid for on this subject.`)
+      return
+    }
+
     setAddingStudentId(studentId)
     const {error}=await supabase.from('schedule_students').insert({schedule_id:reminderCls.id,student_id:studentId})
     if(!error){
       setReminderCls((rc:any)=>({...rc,schedule_students:[...(rc.schedule_students||[]),{student_id:studentId}]}))
       reload()
+    } else {
+      setAddStudentError(error.message||'Could not add student to class')
     }
     setAddingStudentId(null)
   }
@@ -2136,8 +2164,8 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,slotHol
       </div>
 
       {/* View content */}
-      {viewMode==='week'&&renderWeekView({visible,WORKING_DAYS,SLOT_TIMES,isBlocked,toggleBlock,openAddAt,isTeacher,setReminderCls,setReminderOpen,setSentResult,subById,profiles,blockedSlots,centerHours})}
-      {viewMode==='day'&&renderDayView({visible,selectedDate,setSelectedDate,WORKING_DAYS,DAY_LABELS,isTeacher,subById,profiles,students,setReminderCls,setReminderOpen,setSentResult,del,scheduleExceptions})}
+      {viewMode==='week'&&renderWeekView({visible,WORKING_DAYS,SLOT_TIMES,isBlocked,toggleBlock,openAddAt,isTeacher,setReminderCls,setReminderOpen,setSentResult,setAddStudentError,subById,profiles,blockedSlots,centerHours})}
+      {viewMode==='day'&&renderDayView({visible,selectedDate,setSelectedDate,WORKING_DAYS,DAY_LABELS,isTeacher,subById,profiles,students,setReminderCls,setReminderOpen,setSentResult,setAddStudentError,del,scheduleExceptions})}
       {viewMode==='month'&&renderMonthView({visible,selectedDate,setSelectedDate,setViewMode,subById,scheduleExceptions})}
 
       {/* List view below week */}
@@ -2171,7 +2199,7 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,slotHol
                     <td className="td text-sm text-gray-500">{teacher?.full_name||'—'}</td>
                     <td className="td"><div className="flex flex-wrap gap-1">{stuNames.slice(0,3).map((s:any)=><span key={s.id} className="badge bg-gray-100 text-gray-600 text-xs">{s.full_name.split(' ')[0]}</span>)}{stuNames.length>3&&<span className="badge bg-gray-100 text-gray-400">+{stuNames.length-3}</span>}</div></td>
                     <td className="td"><div className="flex gap-1">
-                      <button onClick={()=>{setReminderCls(c);setReminderOpen(true);setSentResult('')}} className="btn btn-sm text-brand-600 border-brand-200 hover:bg-brand-50" title="Send reminders"><Mail className="w-3 h-3"/></button>
+                      <button onClick={()=>{setReminderCls(c);setReminderOpen(true);setSentResult('');setAddStudentError('')}} className="btn btn-sm text-brand-600 border-brand-200 hover:bg-brand-50" title="Send reminders"><Mail className="w-3 h-3"/></button>
                       {!isTeacher&&<button onClick={()=>del(c.id)} className="btn btn-sm btn-danger"><Trash2 className="w-3 h-3"/></button>}
                     </div></td>
                   </tr>
@@ -2255,6 +2283,7 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,slotHol
                       <div className="py-3 text-center text-xs text-gray-400">No matching students</div>
                     )}
                   </div>
+                  {addStudentError&&<div className="mt-2 px-3 py-2 rounded-lg text-xs bg-amber-50 text-amber-700 border border-amber-200">{addStudentError}</div>}
                 </div>
               )}
               <div>
