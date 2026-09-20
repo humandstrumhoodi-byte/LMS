@@ -1691,6 +1691,46 @@ function classesOnDate(visible:any[], exceptions:any[], date:Date){
   return [...normal,...movedIn]
 }
 
+// The next calendar date (today or later) that falls on this schedule's day_of_week —
+// used as the class-detail modal's default selected date.
+function nextOccurrenceDateStr(dayAbbr:string):string{
+  const days=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
+  const targetIdx=days.indexOf(dayAbbr)
+  const d=new Date()
+  const diff=(targetIdx-d.getDay()+7)%7
+  d.setDate(d.getDate()+diff)
+  return d.toISOString().slice(0,10)
+}
+
+// A run of upcoming occurrence dates for a weekly slot, starting from the next one —
+// powers the date-scrubber row in the class-detail modal.
+function occurrenceDatesFrom(dayAbbr:string,count:number):string[]{
+  const days=['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
+  const targetIdx=days.indexOf(dayAbbr)
+  const d=new Date()
+  const diff=(targetIdx-d.getDay()+7)%7
+  d.setDate(d.getDate()+diff)
+  const out:string[]=[]
+  for(let i=0;i<count;i++){
+    out.push(d.toISOString().slice(0,10))
+    d.setDate(d.getDate()+7)
+  }
+  return out
+}
+
+// "11y 6m" style age from a date_of_birth string, for the roster list.
+function ageLabel(dob?:string):string{
+  if(!dob) return ''
+  const b=new Date(dob+'T00:00:00')
+  const now=new Date()
+  let years=now.getFullYear()-b.getFullYear()
+  let months=now.getMonth()-b.getMonth()
+  if(now.getDate()<b.getDate()) months--
+  if(months<0){years--;months+=12}
+  if(years<0) return ''
+  return `${years}y ${months}m`
+}
+
 function renderDayView(p:any){
   const {visible,selectedDate,setSelectedDate,isTeacher,subById,profiles,
          students,setReminderCls,setReminderOpen,setSentResult,setAddStudentError,del,scheduleExceptions} = p
@@ -1860,18 +1900,45 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,slotHol
   const [addStudentQuery,setAddStudentQuery]=useState('')
   const [addingStudentId,setAddingStudentId]=useState<string|null>(null)
   const [addStudentError,setAddStudentError]=useState('')
+  // Which occurrence date the class-detail modal is currently showing the roster for —
+  // defaults to the next upcoming date for this slot (see the useEffect below), and is
+  // moved by the date-scrubber row. "Add"/"Remove" ask whether the change should apply
+  // to just this one date (class_roster_overrides) or the recurring roster
+  // (schedule_students, applies to every future occurrence of this slot).
+  const [modalDate,setModalDate]=useState<string>(new Date().toISOString().slice(0,10))
+  const [pendingAddId,setPendingAddId]=useState<string|null>(null)
+  const [pendingRemoveId,setPendingRemoveId]=useState<string|null>(null)
+  useEffect(()=>{
+    if(reminderCls){
+      setModalDate(nextOccurrenceDateStr(reminderCls.day_of_week))
+      setPendingAddId(null);setPendingRemoveId(null)
+    }
+  },[reminderCls?.id])
+
   // Same invoice-gating rule the enrollment flow uses (see commitOrHoldSubjectSlots /
   // isSubjectPaidNow / slotsRequiredForPackage below) — adding a student directly from
   // the Schedule tab must not bypass "is this subject actually paid for" and "does this
   // student still have a free weekly slot on their package" the way a raw insert did.
-  async function addStudentToClass(studentId:string){
+  // Only applies to the 'recurring' scope — a 'once' (this-date-only) add is a deliberate
+  // one-off (trial sit-in, makeup class) and isn't gated on the subject invoice.
+  async function addStudentScoped(studentId:string,scope:'once'|'recurring'){
     if(!reminderCls)return
     setAddStudentError('')
     const subjectId=reminderCls.subject_id
-    const todayStr=new Date().toISOString().slice(0,10)
 
+    if(scope==='once'){
+      setAddingStudentId(studentId)
+      const {error}=await supabase.from('class_roster_overrides')
+        .upsert({schedule_id:reminderCls.id,student_id:studentId,occurrence_date:modalDate,action:'added'},{onConflict:'schedule_id,student_id,occurrence_date'})
+      if(!error){ loadRosterOverrides() } else { setAddStudentError(error.message||'Could not add student for this date') }
+      setAddingStudentId(null)
+      setPendingAddId(null)
+      return
+    }
+
+    const todayStr=new Date().toISOString().slice(0,10)
     if(!isSubjectPaidNow(studentId,subjectId,payments||[],todayStr)){
-      setAddStudentError('This student has no active paid invoice for this subject — add them via Students → Enroll instead, which will hold the slot until payment.')
+      setAddStudentError('This student has no active paid invoice for this subject — add them via Students → Enroll instead, which will hold the slot until payment (or use "Just this date" for a one-off trial/makeup class).')
       return
     }
 
@@ -1896,18 +1963,32 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,slotHol
       setAddStudentError(error.message||'Could not add student to class')
     }
     setAddingStudentId(null)
+    setPendingAddId(null)
   }
   const [removingStudentId,setRemovingStudentId]=useState<string|null>(null)
-  async function removeStudentFromClass(studentId:string,studentName:string){
+  async function removeStudentScoped(studentId:string,scope:'once'|'recurring'){
     if(!reminderCls)return
-    if(!confirm(`Remove ${studentName} from this class?`))return
     setRemovingStudentId(studentId)
-    const {error}=await supabase.from('schedule_students').delete().eq('schedule_id',reminderCls.id).eq('student_id',studentId)
-    if(!error){
-      setReminderCls((rc:any)=>({...rc,schedule_students:(rc.schedule_students||[]).filter((ss:any)=>ss.student_id!==studentId)}))
-      reload()
+    if(scope==='recurring'){
+      const {error}=await supabase.from('schedule_students').delete().eq('schedule_id',reminderCls.id).eq('student_id',studentId)
+      if(!error){
+        setReminderCls((rc:any)=>({...rc,schedule_students:(rc.schedule_students||[]).filter((ss:any)=>ss.student_id!==studentId)}))
+        reload()
+      }
+    } else {
+      // If they're only here today via a one-off 'added' override, just remove that
+      // override — no need for a 'removed' row cancelling out an 'added' one.
+      const existingAdd=(rosterOverrides||[]).find((o:any)=>o.schedule_id===reminderCls.id&&o.student_id===studentId&&o.occurrence_date===modalDate&&o.action==='added')
+      if(existingAdd){
+        await supabase.from('class_roster_overrides').delete().eq('id',existingAdd.id)
+      } else {
+        await supabase.from('class_roster_overrides')
+          .upsert({schedule_id:reminderCls.id,student_id:studentId,occurrence_date:modalDate,action:'removed'},{onConflict:'schedule_id,student_id,occurrence_date'})
+      }
+      loadRosterOverrides()
     }
     setRemovingStudentId(null)
+    setPendingRemoveId(null)
   }
 
   // Blocked slots
@@ -1922,6 +2003,16 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,slotHol
     const {data,error}=await supabase.from('class_schedule_exceptions').select('*')
     if(error) console.warn('[class_schedule_exceptions] query failed (table may not exist yet — run add_schedule_exceptions.sql):',error)
     setScheduleExceptions(data||[])
+  }
+  // Per-occurrence roster overrides — see supabase/add_class_roster_overrides.sql.
+  // Lets a student be added/removed for ONE specific date without touching the
+  // recurring roster in schedule_students.
+  const [rosterOverrides,setRosterOverrides]=useState<any[]>([])
+  useEffect(()=>{ loadRosterOverrides() },[])
+  async function loadRosterOverrides(){
+    const {data,error}=await supabase.from('class_roster_overrides').select('*')
+    if(error) console.warn('[class_roster_overrides] query failed (table may not exist yet — run add_class_roster_overrides.sql):',error)
+    setRosterOverrides(data||[])
   }
   const [reviewModal,setReviewModal]=useState<any>(null)
   const [reviewBusy,setReviewBusy]=useState(false)
@@ -2043,11 +2134,13 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,slotHol
     setForm({subject_id:'',day_of_week:day,start_time:time,duration_minutes:60,student_ids:[],studentSearch:''})
     setOpen(true)
   }
-  async function sendReminders(){
+  // studentIds is passed in explicitly (the modal's effective roster for whichever
+  // date is selected in the date scrubber) rather than always the recurring roster,
+  // so a manual send matches who's actually on for that specific occurrence.
+  async function sendReminders(studentIds:string[]){
     if(!reminderCls)return;setSending(true);setSentResult('')
-    const schedStudentIds=(reminderCls.schedule_students||[]).map((ss:any)=>ss.student_id)
     const sub=subjects.find((s:any)=>s.id===reminderCls.subject_id)
-    const r=await fetch('/api/email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'class_reminder',scheduleId:reminderCls.id,studentIds:schedStudentIds,teacherIds:sub?.teacher_id?[sub.teacher_id]:[],customMessage:reminderMsg})})
+    const r=await fetch('/api/email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'class_reminder',scheduleId:reminderCls.id,studentIds,teacherIds:sub?.teacher_id?[sub.teacher_id]:[],customMessage:reminderMsg})})
     const d=await r.json()
     setSending(false);setSentResult(d.ok?`✓ Sent ${d.sent} emails`:`Error: ${d.error}`)
   }
@@ -2212,40 +2305,106 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,slotHol
       )}
 
       {/* Reminder modal */}
-      <Modal open={reminderOpen} onClose={()=>setReminderOpen(false)} title="Send Class Reminders" wide>
+      <Modal open={reminderOpen} onClose={()=>setReminderOpen(false)} title="Class Details" wide>
         {reminderCls&&(()=>{
           const sub=subById(reminderCls.subject_id)
-          const schedStudents=(reminderCls.schedule_students||[]).map((ss:any)=>students.find((st:any)=>st.id===ss.student_id)).filter(Boolean)
+          const teacher=profiles.find((pr:any)=>pr.id===sub?.teacher_id)
+
+          // Effective roster for modalDate = recurring roster (schedule_students),
+          // minus any 'removed' override for this exact date, plus any 'added' one.
+          const overridesForDate=(rosterOverrides||[]).filter((o:any)=>o.schedule_id===reminderCls.id&&o.occurrence_date===modalDate)
+          const removedIds=new Set(overridesForDate.filter((o:any)=>o.action==='removed').map((o:any)=>o.student_id))
+          const addedIds=overridesForDate.filter((o:any)=>o.action==='added').map((o:any)=>o.student_id)
+          const baseIds=(reminderCls.schedule_students||[]).map((ss:any)=>ss.student_id).filter((id:string)=>!removedIds.has(id))
+          const effectiveIds=Array.from(new Set([...baseIds,...addedIds]))
+          const schedStudents=effectiveIds.map(id=>students.find((st:any)=>st.id===id)).filter(Boolean)
+            .sort((a:any,b:any)=>(a.full_name||'').localeCompare(b.full_name||''))
+
+          const dateException=(scheduleExceptions||[]).find((e:any)=>e.schedule_id===reminderCls.id&&e.exception_date===modalDate)
+          const upcomingDates=occurrenceDatesFrom(reminderCls.day_of_week,10)
+          const todayStr=new Date().toISOString().slice(0,10)
+
           return(
             <div className="space-y-4">
               <div className="bg-brand-50 rounded-xl p-4 text-sm">
-                <div className="font-semibold text-brand-700 mb-2">📧 {sub?.name} — {reminderCls.day_of_week} at {reminderCls.start_time?.slice(0,5)}</div>
-                <div className="text-xs text-brand-600">{reminderCls.duration_minutes} min · {schedStudents.length} students</div>
+                <div className="font-semibold text-brand-700 mb-2">🎵 {sub?.name} — {reminderCls.day_of_week} at {reminderCls.start_time?.slice(0,5)}</div>
+                <div className="text-xs text-brand-600">{reminderCls.duration_minutes} min{teacher&&` · ${teacher.full_name}`} · {schedStudents.length} student{schedStudents.length!==1?'s':''} on {new Date(modalDate+'T00:00:00').toLocaleDateString('en-IN',{day:'numeric',month:'short'})}</div>
               </div>
+
+              {/* Date scrubber — jump to any upcoming occurrence of this slot */}
               <div>
-                <div className="label mb-2">Recipients</div>
-                <div className="space-y-1 max-h-40 overflow-y-auto">
-                  {schedStudents.map((s:any)=><div key={s.id} className="flex items-center justify-between gap-2 text-sm px-3 py-1.5 bg-gray-50 rounded-lg">
-                    <span className="min-w-0 truncate">{s.full_name}</span>
-                    <div className="flex items-center gap-2 flex-shrink-0">
-                      <span className={clsx('text-xs',s.email?'text-gray-400':'text-red-400')}>{s.email||'No email'}</span>
+                <div className="label mb-1.5">Upcoming Classes in This Slot</div>
+                <div className="flex gap-1.5 overflow-x-auto pb-1.5">
+                  {upcomingDates.map(dateStr=>{
+                    const exc=(scheduleExceptions||[]).find((e:any)=>e.schedule_id===reminderCls.id&&e.exception_date===dateStr)
+                    const isToday=dateStr===todayStr
+                    const isSelected=dateStr===modalDate
+                    const d=new Date(dateStr+'T00:00:00')
+                    return(
+                      <button key={dateStr}
+                        onClick={()=>{setModalDate(dateStr);setPendingAddId(null);setPendingRemoveId(null)}}
+                        className={clsx('flex-shrink-0 px-2.5 py-1.5 rounded-lg text-xs font-medium border text-center transition-colors',
+                          isSelected?'bg-brand-500 text-white border-brand-500':'bg-white text-gray-600 border-gray-200 hover:border-brand-300',
+                          exc&&!isSelected&&'opacity-50')}>
+                        <div>{d.toLocaleDateString('en-IN',{day:'numeric',month:'short'})}</div>
+                        {isToday&&<div className="text-[10px] opacity-75">Today</div>}
+                        {exc&&<div className="text-[10px] opacity-75">{exc.new_date?'Moved':'Cancelled'}</div>}
+                      </button>
+                    )
+                  })}
+                </div>
+                {dateException&&(
+                  <div className="mt-1.5 px-3 py-1.5 rounded-lg text-xs bg-amber-50 text-amber-700 border border-amber-200">
+                    {dateException.new_date
+                      ? `This occurrence was moved to ${dateException.new_date}${dateException.new_time?` at ${dateException.new_time.slice(0,5)}`:''}.`
+                      : 'This occurrence was cancelled.'}
+                    {dateException.reason&&` — ${dateException.reason}`}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <div className="label mb-2">Roster — {new Date(modalDate+'T00:00:00').toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'short'})}</div>
+                <div className="space-y-1 max-h-48 overflow-y-auto">
+                  {schedStudents.map((s:any)=>{
+                    const isOneOff=addedIds.includes(s.id)
+                    const paid=isSubjectPaidNow(s.id,reminderCls.subject_id,payments||[],modalDate)
+                    return(
+                    <div key={s.id} className="flex items-center justify-between gap-2 text-sm px-3 py-1.5 bg-gray-50 rounded-lg">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="truncate font-medium">{s.full_name}</span>
+                          {s.date_of_birth&&ageLabel(s.date_of_birth)&&<span className="text-xs text-gray-400">{ageLabel(s.date_of_birth)}</span>}
+                          <span className={clsx('badge text-[10px]',paid?'bg-emerald-50 text-emerald-700':'bg-amber-50 text-amber-700')}>{paid?'Paid':'Pending'}</span>
+                          {isOneOff&&<span className="badge text-[10px] bg-sky-50 text-sky-700">this date only</span>}
+                        </div>
+                        <span className={clsx('text-xs',s.email?'text-gray-400':'text-red-400')}>{s.email||'No email'}</span>
+                      </div>
                       {!isTeacher&&(
-                        <button
-                          title="Remove from this class"
-                          disabled={removingStudentId===s.id}
-                          onClick={()=>removeStudentFromClass(s.id,s.full_name)}
-                          className="text-gray-300 hover:text-red-500 p-0.5">
-                          {removingStudentId===s.id?<Loader2 className="w-3.5 h-3.5 animate-spin"/>:<Trash2 className="w-3.5 h-3.5"/>}
-                        </button>
+                        pendingRemoveId===s.id?(
+                          <div className="flex items-center gap-1.5 flex-shrink-0">
+                            <button disabled={removingStudentId===s.id} onClick={()=>removeStudentScoped(s.id,'once')} className="text-xs text-amber-600 hover:underline whitespace-nowrap">Just this date</button>
+                            <button disabled={removingStudentId===s.id} onClick={()=>removeStudentScoped(s.id,'recurring')} className="text-xs text-red-600 hover:underline whitespace-nowrap">All future</button>
+                            <button onClick={()=>setPendingRemoveId(null)} className="text-gray-300 hover:text-gray-500 p-0.5"><X className="w-3.5 h-3.5"/></button>
+                          </div>
+                        ):(
+                          <button
+                            title="Remove from this class"
+                            disabled={removingStudentId===s.id}
+                            onClick={()=>setPendingRemoveId(s.id)}
+                            className="text-gray-300 hover:text-red-500 p-0.5 flex-shrink-0">
+                            {removingStudentId===s.id?<Loader2 className="w-3.5 h-3.5 animate-spin"/>:<Trash2 className="w-3.5 h-3.5"/>}
+                          </button>
+                        )
                       )}
                     </div>
-                  </div>)}
-                  {!schedStudents.length&&<div className="text-sm text-gray-400 px-3">No students assigned</div>}
+                  )})}
+                  {!schedStudents.length&&<div className="text-sm text-gray-400 px-3">No students on this date</div>}
                 </div>
               </div>
               {!isTeacher&&(
                 <div>
-                  <div className="label mb-2">Add Another Student to This Class</div>
+                  <div className="label mb-2">Add a Student</div>
                   <div className="relative mb-2">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400"/>
                     <input
@@ -2269,13 +2428,24 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,slotHol
                               <div className="truncate font-medium">{s.full_name}</div>
                               {!enrolledInSubject&&<div className="text-xs text-amber-600">not enrolled in {sub?.name}</div>}
                             </div>
-                            <button
-                              className="btn btn-sm flex-shrink-0"
-                              disabled={addingStudentId===s.id}
-                              onClick={()=>addStudentToClass(s.id)}>
-                              {addingStudentId===s.id?<Loader2 className="w-3.5 h-3.5 animate-spin"/>:<Plus className="w-3.5 h-3.5"/>}
-                              Add
-                            </button>
+                            {pendingAddId===s.id?(
+                              <div className="flex items-center gap-1 flex-shrink-0">
+                                <button className="btn btn-sm" disabled={addingStudentId===s.id} onClick={()=>addStudentScoped(s.id,'once')} title={`Add for ${modalDate} only`}>
+                                  {addingStudentId===s.id?<Loader2 className="w-3.5 h-3.5 animate-spin"/>:'Just this date'}
+                                </button>
+                                <button className="btn btn-sm btn-primary" disabled={addingStudentId===s.id} onClick={()=>addStudentScoped(s.id,'recurring')} title="Add to this + future classes in this timeslot">
+                                  This + future
+                                </button>
+                                <button onClick={()=>setPendingAddId(null)} className="text-gray-300 hover:text-gray-500 p-0.5"><X className="w-3.5 h-3.5"/></button>
+                              </div>
+                            ):(
+                              <button
+                                className="btn btn-sm flex-shrink-0"
+                                onClick={()=>setPendingAddId(s.id)}>
+                                <Plus className="w-3.5 h-3.5"/>
+                                Add
+                              </button>
+                            )}
                           </div>
                         )
                       })}
@@ -2287,13 +2457,17 @@ function ScheduleTab({schedules,subjects,students,profiles,profile,perms,slotHol
                 </div>
               )}
               <div>
+                <div className="flex items-center gap-1.5 text-xs text-gray-400 mb-2">
+                  <Clock className="w-3 h-3 flex-shrink-0"/>
+                  Automatic reminders go out daily at 7am IST to students with a class that day — send one manually below any time, to the roster shown above for {new Date(modalDate+'T00:00:00').toLocaleDateString('en-IN',{day:'numeric',month:'short'})}.
+                </div>
                 <label className="label">Custom Note (optional)</label>
                 <textarea className="input" rows={2} placeholder="e.g. Please bring your instrument" value={reminderMsg} onChange={e=>setReminderMsg(e.target.value)}/>
               </div>
               {sentResult&&<div className={clsx('px-3 py-2 rounded-lg text-sm',sentResult.startsWith('✓')?'bg-emerald-50 text-emerald-700':'bg-red-50 text-red-600')}>{sentResult}</div>}
               <div className="flex justify-end gap-2">
                 <button className="btn" onClick={()=>setReminderOpen(false)}>Close</button>
-                <button className="btn-primary" onClick={sendReminders} disabled={sending||!schedStudents.filter((s:any)=>s.email).length}>
+                <button className="btn-primary" onClick={()=>sendReminders(schedStudents.map((s:any)=>s.id))} disabled={sending||!schedStudents.filter((s:any)=>s.email).length}>
                   {sending?<Loader2 className="w-4 h-4 animate-spin"/>:<Send className="w-4 h-4"/>}
                   {sending?'Sending…':`Send to ${schedStudents.filter((s:any)=>s.email).length} recipients`}
                 </button>
