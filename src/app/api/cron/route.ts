@@ -30,6 +30,137 @@ async function sendMail(to: string, subject: string, html: string): Promise<bool
   }
 }
 
+// ══════════════════════════════════════════════════════════════
+// PACKAGE-RUNNING-LOW ALERTS — "2 classes prior" renewal warning.
+// Same billing-cycle math as the Revenue Forecast / Classes Taken reports
+// (collapseInvoices + coverageEndDate), reimplemented here in plain TS
+// since this route can't import from the client component file. Fires
+// once per (student, subject, cycle) the moment classes-remaining hits
+// exactly 2 — see supabase/add_package_low_alerts.sql for the dedupe table.
+// ══════════════════════════════════════════════════════════════
+function paymentAnchorDateStr(p: any): string | null {
+  if (p.payment_date) return p.payment_date
+  if (p.due_date) return p.due_date
+  if (p.month_label) {
+    const parsed = new Date(`1 ${p.month_label}`)
+    if (!isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10)
+  }
+  if (p.created_at) return String(p.created_at).slice(0, 10)
+  return null
+}
+function addMonthsToDateStr(dateStr: string, n: number): Date {
+  const d = new Date(dateStr + 'T00:00:00')
+  d.setMonth(d.getMonth() + n)
+  return d
+}
+function coverageEndDate(anchorStr: string, cycleMonths: number): Date {
+  const d = addMonthsToDateStr(anchorStr, cycleMonths)
+  d.setDate(d.getDate() - 1)
+  return d
+}
+function collapseInvoices(payments: any[]): { anchor: string; amount: number; months: number; raw: any }[] {
+  const groups = new Map<string, any[]>()
+  payments.forEach(p => {
+    const key = p.invoice_group_id || p.id
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key)!.push(p)
+  })
+  const invoices: { anchor: string; amount: number; months: number; raw: any }[] = []
+  groups.forEach(group => {
+    const withAnchor = group.map(p => ({ p, anchor: paymentAnchorDateStr(p) })).filter(x => x.anchor)
+    if (!withAnchor.length) return
+    withAnchor.sort((a, b) => a.anchor!.localeCompare(b.anchor!))
+    const earliest = withAnchor[0]
+    const amount = earliest.p.total_invoice_amount || group.reduce((a: number, p: any) => a + (p.amount || 0), 0)
+    const months = group.map((p: any) => Number(p.months)).find((m: number) => m > 0) || 1
+    invoices.push({ anchor: earliest.anchor!, amount, months, raw: earliest.p })
+  })
+  return invoices
+}
+
+async function checkPackageLowAlerts(svc: any): Promise<{ checked: number; alerted: number; failed: number }> {
+  const todayStr = new Date().toISOString().slice(0, 10)
+
+  const [{ data: students }, { data: payments }, { data: packages }, { data: schedules }, { data: attendance }] = await Promise.all([
+    svc.from('students').select('id, full_name, email, guardian_email, guardian_name, status, student_subjects(subject_id, subjects(name))'),
+    svc.from('payments').select('student_id, subject_id, status, amount, payment_date, due_date, month_label, created_at, months, package_id, invoice_group_id, total_invoice_amount').eq('status', 'paid'),
+    svc.from('packages').select('id, name, classes_pm'),
+    svc.from('class_schedules').select('id, subject_id'),
+    svc.from('attendance').select('student_id, schedule_id, class_date, status, type').eq('type', 'student'),
+  ])
+
+  if (!students?.length) return { checked: 0, alerted: 0, failed: 0 }
+
+  const schedSubjectMap = new Map((schedules || []).map((s: any) => [s.id, s.subject_id]))
+  let checked = 0, alerted = 0, failed = 0
+  const toInsert: any[] = []
+
+  for (const student of students) {
+    if ((student.status || 'Active') !== 'Active') continue
+    for (const ss of (student as any).student_subjects || []) {
+      checked++
+      const paidForSubject = (payments || []).filter((p: any) => p.student_id === student.id && p.subject_id === ss.subject_id)
+      const invoices = collapseInvoices(paidForSubject).sort((a, b) => b.anchor.localeCompare(a.anchor))
+      const latest = invoices[0]
+      if (!latest) continue // no paid package on record
+
+      const end = coverageEndDate(latest.anchor, latest.months)
+      const endStr = end.toISOString().slice(0, 10)
+      if (endStr < todayStr) continue // package already ended — that's overdue renewal, not "running low"
+
+      const pkg = (packages || []).find((pk: any) => pk.id === (latest.raw as any)?.package_id)
+      if (!pkg?.classes_pm) continue // no package on file — nothing to count an allowance against
+      const allowance = pkg.classes_pm * latest.months
+
+      const cycleAttendance = (attendance || []).filter((a: any) =>
+        a.student_id === student.id && schedSubjectMap.get(a.schedule_id) === ss.subject_id &&
+        a.class_date >= latest.anchor && a.class_date <= endStr
+      )
+      const taken = cycleAttendance.filter((a: any) => a.status === 'present' || a.status === 'late').length
+      const remaining = allowance - taken
+      if (remaining !== 2) continue // fire exactly once, right when 2 classes are left
+
+      const { data: existing } = await svc.from('package_low_alerts').select('id')
+        .eq('student_id', student.id).eq('subject_id', ss.subject_id).eq('cycle_anchor', latest.anchor).maybeSingle()
+      if (existing) continue // already alerted for this cycle
+
+      const recipient = (student as any).guardian_email || student.email
+      if (!recipient) continue
+
+      const subjectName = ss.subjects?.name || 'your class'
+      const html = `
+        <div style="font-family:sans-serif;max-width:500px;margin:0 auto">
+          <div style="background:#3B1F8C;padding:20px 24px;border-radius:12px 12px 0 0">
+            <div style="color:white;font-size:18px;font-weight:700">⏳ Package Running Low</div>
+            <div style="color:rgba(255,255,255,0.65);font-size:12px;margin-top:3px">Hum &amp; Strum</div>
+          </div>
+          <div style="background:white;padding:24px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px">
+            <p style="color:#374151;margin:0 0 16px">Hi <strong>${(student as any).guardian_name || student.full_name}</strong>,</p>
+            <p style="color:#374151;margin:0 0 16px">
+              ${student.full_name}'s <strong>${subjectName}</strong> package (${pkg.name || `${pkg.classes_pm} classes/month`}) has
+              <strong>2 classes remaining</strong>. Please renew soon to avoid a gap in classes.
+            </p>
+            <div style="background:#fefce8;border:1px solid #fde68a;border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:#92400e">
+              Current package covers through <strong>${endStr}</strong>.
+            </div>
+            <div style="border-top:1px solid #f3f4f6;margin-top:20px;padding-top:12px;font-size:11px;color:#9ca3af;text-align:center">
+              Hum &amp; Strum · Hoodi, Bengaluru · +91 97312 70069
+            </div>
+          </div>
+        </div>`
+
+      const ok = await sendMail(recipient, `⏳ ${student.full_name}'s ${subjectName} package — 2 classes left`, html)
+      if (ok) {
+        alerted++
+        toInsert.push({ student_id: student.id, subject_id: ss.subject_id, cycle_anchor: latest.anchor, classes_taken_at_send: taken })
+      } else failed++
+    }
+  }
+
+  if (toInsert.length) await svc.from('package_low_alerts').insert(toInsert)
+  return { checked, alerted, failed }
+}
+
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get('authorization')
   const cronSecret = process.env.CRON_SECRET || 'hum-strum-cron-2024'
@@ -37,6 +168,15 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const svc = await serviceSB()
+
+  // Package-running-low check runs every time this cron fires (daily), independent
+  // of whether there are classes today — it's about renewal timing, not today's schedule.
+  let packageAlerts = { checked: 0, alerted: 0, failed: 0 }
+  try {
+    packageAlerts = await checkPackageLowAlerts(svc)
+  } catch (e: any) {
+    console.error('[CRON package-low-alerts]', e.message)
+  }
   const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
   const today = new Date()
   const todayDay = days[today.getDay()]
@@ -57,7 +197,7 @@ export async function GET(req: NextRequest) {
     .order('start_time')
 
   if (!classes?.length) {
-    return NextResponse.json({ ok: true, sent: 0, message: `No classes on ${todayDay}` })
+    return NextResponse.json({ ok: true, sent: 0, message: `No classes on ${todayDay}`, packageAlerts })
   }
 
   let teacherSent = 0, studentSent = 0, failed = 0
@@ -223,6 +363,7 @@ export async function GET(req: NextRequest) {
     failed,
     day: todayDay,
     classes: classes.length,
+    packageAlerts,
     dev: !createTransporter(),
   })
 }
