@@ -4476,6 +4476,17 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
       console.error('Failed to load delete requests', e)
     }
   }
+
+  // Classes taken this billing cycle, per subject — the dashboard's global attendance
+  // load is capped (limit 500, most-recent-first) so it can miss this student's older
+  // records once the school has enough volume; fetch this student's full history directly.
+  const [studentAttendance, setStudentAttendance] = useState<any[]>([])
+  useEffect(() => { loadStudentAttendance() }, [student.id])
+  async function loadStudentAttendance() {
+    const { data, error } = await supabase.from('attendance').select('*').eq('student_id', student.id).eq('type', 'student')
+    if (error) console.warn('[attendance] load failed:', error)
+    setStudentAttendance(data || [])
+  }
   const pendingDeleteFor = (paymentId: string) => deleteRequests.find((r:any) => r.payment_id === paymentId && r.status === 'pending')
   const pendingDeleteReqs = deleteRequests.filter((r:any) => r.status === 'pending')
 
@@ -4675,6 +4686,26 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
     student.student_subjects?.some((ss:any) => ss.subject_id === s.id)
   )
 
+  // Classes taken vs. the package's allowance, for the CURRENT billing cycle of each
+  // enrolled subject — same billing-cycle math (collapseInvoices/coverageEndDate) used
+  // by the Revenue Forecast report, so "this cycle" always matches what was invoiced.
+  const classesTakenBySubject = enrolledSubs.map((s:any) => {
+    const paidForSubject = payments.filter((p:any) => p.subject_id === s.id && p.status === 'paid')
+    const invoices = collapseInvoices(paidForSubject).sort((a:any,b:any) => b.anchor.localeCompare(a.anchor))
+    const latest = invoices[0]
+    if (!latest) return { subject: s, hasPackage: false }
+    const pkg = (packages||[]).find((pk:any) => pk.id === latest.raw?.package_id)
+    const end = coverageEndDate(latest.anchor, latest.months).toISOString().slice(0,10)
+    const schedIds = (schedules||[]).filter((sc:any) => sc.subject_id === s.id).map((sc:any) => sc.id)
+    const cycleAttendance = studentAttendance.filter((a:any) =>
+      schedIds.includes(a.schedule_id) && a.class_date >= latest.anchor && a.class_date <= end
+    )
+    const taken = cycleAttendance.filter((a:any) => a.status === 'present' || a.status === 'late').length
+    const billableAbsences = cycleAttendance.filter((a:any) => a.status === 'absent_billable').length
+    const allowance = pkg ? pkg.classes_pm * latest.months : null
+    return { subject: s, hasPackage: true, pkg, anchor: latest.anchor, end, taken, billableAbsences, allowance }
+  })
+
   // ── Instrument management (add/remove instruments for an already-enrolled student) ──
   const [instrModalOpen, setInstrModalOpen] = useState(false)
   const [instrSelected, setInstrSelected] = useState<string[]>([])
@@ -4856,6 +4887,37 @@ function StudentDetailModal({ student, payments, subjects, packages, fees, profi
                   : <div className="flex flex-wrap gap-2">
                       {enrolledSubs.map((s:any) => (
                         <span key={s.id} className={clsx('badge text-sm px-3 py-1', colorBadge[s.color]||colorBadge.violet)}>{s.name}</span>
+                      ))}
+                    </div>
+                }
+              </div>
+
+              {/* Classes taken this billing cycle, per subject */}
+              <div>
+                <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Classes Taken (This Cycle)</div>
+                {classesTakenBySubject.length === 0
+                  ? <div className="text-sm text-gray-300">No subjects enrolled</div>
+                  : <div className="space-y-2">
+                      {classesTakenBySubject.map((c:any) => (
+                        <div key={c.subject.id} className="flex items-center justify-between gap-2 bg-gray-50 rounded-lg px-3 py-2">
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium text-gray-800">{c.subject.name}</div>
+                            {c.hasPackage
+                              ? <div className="text-xs text-gray-400">{c.pkg?.name || `${c.pkg?.classes_pm||'?'} classes/mo`} · {c.anchor} – {c.end}{c.billableAbsences>0 ? ` · ${c.billableAbsences} billable absence${c.billableAbsences!==1?'s':''}` : ''}</div>
+                              : <div className="text-xs text-amber-600">No paid invoice — nothing to count against</div>}
+                          </div>
+                          {c.hasPackage && (
+                            <div className="text-right flex-shrink-0">
+                              <span className={clsx('badge text-xs font-semibold',
+                                c.allowance==null ? 'bg-gray-100 text-gray-500' :
+                                c.taken>=c.allowance ? 'bg-red-50 text-red-700' :
+                                c.taken>=c.allowance*0.75 ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'
+                              )}>
+                                {c.taken}{c.allowance!=null?` / ${c.allowance}`:''} taken
+                              </span>
+                            </div>
+                          )}
+                        </div>
                       ))}
                     </div>
                 }
