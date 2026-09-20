@@ -448,7 +448,7 @@ function DashboardShellInner({profile}:{profile:Profile}){
           {tab==='schedule'&&<ScheduleTab schedules={schedules} subjects={subjects} students={students} profiles={profiles} profile={profile} perms={perms} slotHolds={slotHolds} payments={payments} packages={packages} reload={load}/>}
           {tab==='fees'&&<FeesTab subjects={subjects} fees={fees} reload={load}/>}
           {tab==='payments'&&<PaymentsTab payments={payments} students={students} subjects={subjects} fees={fees} perms={perms} profile={profile} reload={load}/>}
-          {tab==='reports'&&<ReportsTab students={students} subjects={subjects} payments={payments} profiles={profiles} attendance={attendance} profile={profile} reload={load}/>}
+          {tab==='reports'&&<ReportsTab students={students} subjects={subjects} payments={payments} packages={packages} profiles={profiles} attendance={attendance} profile={profile} reload={load}/>}
           {tab==='approvals'&&<ApprovalsTab profile={profile} onReviewed={()=>{loadPendingApprovalsCount();load()}}/>}
           {tab==='attendance'&&<AttendanceTab schedules={schedules} subjects={subjects} students={students} profiles={profiles} profile={profile} attendance={attendance} reload={load}/>}
           {tab==='users'&&<UsersTab profiles={profiles} profile={profile} reload={load}/>}
@@ -2968,8 +2968,10 @@ function PaymentsTab({payments,students,subjects,fees,perms,profile,reload}:any)
   const [groupView,setGroupView]=useState<any>(null) // set to a payment row to view its full installment group
   const [splitEnabled,setSplitEnabled]=useState(false)
   const emptySplitRow=()=>({amount:'',mode_of_payment:'UPI',status:'paid',date:new Date().toISOString().slice(0,10)})
-  const [installments,setInstallments]=useState<any[]>([emptySplitRow(),{...emptySplitRow(),status:'pending',date:''}])
-  const emptyForm = {student_id:'',subject_id:'',month_label:'',amount:'',payment_date:'',due_date:'',mode_of_payment:'UPI',receipt_number:'',invoice_number:'',description:'',notes:'',status:'paid',discount:''}
+  const [installments,setInstallments]=useState<any[]>([emptySplitRow(),{...emptySplitRow(),status:'pending',date:addDaysToDateStr(new Date().toISOString().slice(0,10),7)}])
+  // Due date defaults to 7 days from today (the bill-raising date), matching Raise
+  // Invoice / Enrollment — still editable per-invoice, this is just the starting point.
+  const emptyForm = {student_id:'',subject_id:'',month_label:'',amount:'',payment_date:'',due_date:addDaysToDateStr(new Date().toISOString().slice(0,10),7),mode_of_payment:'UPI',receipt_number:'',invoice_number:'',description:'',notes:'',status:'paid',discount:''}
   const [form,setForm]=useState<any>(emptyForm)
   const [editing,setEditing]=useState<any>(null)
   const [busy,setBusy]=useState(false);const [importResult,setImportResult]=useState('');const [q,setQ]=useState('')
@@ -3548,11 +3550,17 @@ const HOW_TOS: HowTo[] = [
     a: 'Student Reports cover enrollment — status breakdown, inactive students, by instrument, by grade. Payment Reports cover money — Monthly Collection, Year to Date, Payment by Mode, Revenue by Subject, and Revenue Forecast. Both live under the Reports tab\'s left-hand navigation.',
     keywords: ['reports tab','student reports','payment reports'] },
   { category: 'Reports', q: 'How does the Revenue Forecast report work?',
-    a: 'It answers "what revenue should we expect this month" by adding together what\'s already invoiced for the month plus a projection for active students who haven\'t been re-invoiced yet. The projection takes each student\'s last payment, reads its billing-cycle length (defaults to monthly if that wasn\'t recorded), and rolls forward to their next expected due date at their last-paid amount. Students who needed more than one missed cycle to catch up to today are flagged "overdue" since their actual renewal date is less certain. Use the ‹ › arrows to view future months, and the Overdue Renewals card to filter to just those.',
+    a: 'It answers "what revenue should we expect this month" by adding together what\'s already invoiced for the month plus a projection for active students who haven\'t been re-invoiced yet. The projection takes each student\'s last payment, reads its billing-cycle length (defaults to monthly if that wasn\'t recorded), and rolls forward to their next expected renewal date at their last-paid amount. A renewal starting on or before the 23rd counts in its own month; starting after the 23rd, it\'s pushed to the following month instead, since a late-month renewal is rarely actually collected before the month turns over. Students who needed more than one missed cycle to catch up to today are flagged "overdue" since their actual renewal date is less certain. Use the ‹ › arrows to view future months, and the Overdue Renewals card to filter to just those.',
     keywords: ['revenue forecast','forecasted revenue','projected revenue','expected revenue','next month revenue'] },
   { category: 'Reports', q: 'Why does a forecasted student show as "assumed monthly" instead of their real package length?',
     a: 'The forecast reads the billing-cycle length from the payment\'s `months` field, which isn\'t always saved when an invoice is raised — when it\'s missing, the forecast defaults to a 1-month cycle rather than guessing wrong. If most of your revenue comes from 3- or 6-month packages, ask a superadmin whether the invoice form has been updated to always save the package length, since that directly improves this report\'s accuracy.',
     keywords: ['assumed monthly','package length','forecast accuracy'] },
+  { category: 'Reports', q: 'Where do I see which students\' packages are ending soon?',
+    a: 'Reports → Package Expiry Calendar. It lists every active student+subject whose current paid package hasn\'t finished yet, grouped by the day it ends, with a "classes taken / allowance" badge for the current cycle. Switch between the next 14/30/60 days with the buttons at the top, and export the visible list as CSV.',
+    keywords: ['package expiry','packages ending','renewal calendar','classes remaining'] },
+  { category: 'Reports', q: 'Does the app auto-email parents when a package is about to run out?',
+    a: 'Yes — the daily cron job checks every active student\'s current paid package and, the moment exactly 2 classes remain against their allowance, emails the registered address (guardian email if set, otherwise the student\'s own email) once per billing cycle so it doesn\'t repeat every day. See supabase/add_package_low_alerts.sql for the dedupe table.',
+    keywords: ['package alert','low balance email','2 classes remaining','renewal reminder','auto alert'] },
 
   // ── Attendance ───────────────────────────────────────────────
   { category: 'Attendance', q: 'How do I mark class attendance for students?',
@@ -5910,7 +5918,7 @@ function DonutChart({ data, total }: { data: { label: string; value: number; col
   )
 }
 
-function ReportsTab({ students, subjects, payments, profiles, attendance, profile, reload }: any) {
+function ReportsTab({ students, subjects, payments, packages, profiles, attendance, profile, reload }: any) {
   const isSuperadmin = profile?.role === 'superadmin'
   const [activeReport, setActiveReport] = useState<string>('students_status')
   const [paymentDrilldown, setPaymentDrilldown] = useState<{title:string;list:any[];color:string}|null>(null)
@@ -6027,6 +6035,7 @@ function ReportsTab({ students, subjects, payments, profiles, attendance, profil
     { id: 'payment_mode',        label: 'Payment by Mode',        group: 'Payment Reports' },
     { id: 'payment_subject',     label: 'Revenue by Subject',     group: 'Payment Reports' },
     { id: 'payment_forecast',    label: 'Revenue Forecast',       group: 'Payment Reports' },
+    { id: 'package_expiry',      label: 'Package Expiry Calendar',group: 'Payment Reports' },
     { id: 'attendance_report',   label: 'Attendance Summary',     group: 'Other' },
   ]
 
@@ -6390,6 +6399,17 @@ function ReportsTab({ students, subjects, payments, profiles, attendance, profil
               students={students}
               subjects={subjects}
               payments={payments}
+              exportCSV={exportCSV}
+            />
+          )}
+
+          {activeReport === 'package_expiry' && (
+            <PackageExpiryReport
+              students={students}
+              subjects={subjects}
+              packages={packages}
+              payments={payments}
+              attendance={attendance}
               exportCSV={exportCSV}
             />
           )}
@@ -6894,12 +6914,17 @@ function RevenueBySubjectReport({ bySubjectYTD, bySubjectMTD, fyLabel, exportCSV
 
 // ══════════════════════════════════════════════════════════════
 // REVENUE FORECAST
-// "Forecasted revenue for month M" = every invoice whose COVERAGE PERIOD
-// ENDS in M — a 1-month invoice for September ends in September; a
-// 3-month invoice covering July–September also ends in September (so its
-// renewal is expected then); a 6-month invoice covering April–September
-// ends in September too. Anything ending in October, November, etc. is
-// that later month's forecast instead — never counted in both.
+// "Forecasted revenue for month M" = every invoice/renewal whose RAISE DATE
+// (the start of its billing cycle — the actual invoice date for the invoice
+// that exists today, or the projected next-cycle start for a renewal that
+// hasn't been invoiced yet) is expected to be COLLECTED in M.
+//
+// A renewal that starts on or before the 23rd of a month is counted in that
+// same month; one starting after the 23rd is pushed to the following month
+// instead, since in practice a late-month renewal is rarely paid before the
+// month turns over (see effectiveCollectionMonth below) — this is what
+// keeps the forecast matching real collection timing rather than pure
+// calendar-cycle math.
 //
 // Method per active student+subject: split payments (installments sharing
 // one invoice_group_id) are first collapsed into a single logical invoice
@@ -6907,12 +6932,11 @@ function RevenueBySubjectReport({ bySubjectYTD, bySubjectMTD, fyLabel, exportCSV
 // the coverage start, so a part-paid package isn't split across months.
 // From each student+subject's most recent invoice, `months` gives the
 // cycle length (defaults to 1 = monthly, since that field isn't always
-// recorded on older invoices) and coverage runs [start, start+months−1 day].
-// If that window's end falls in M, it's this month's row — at n=1 (the
-// invoice that actually exists) it's "Invoiced"; rolling the cycle forward
-// further (n>1, because no newer invoice exists yet) makes it "Projected".
-// A projected row that needed more than one missed cycle to catch up to
-// today is flagged "overdue" — its actual renewal date is less certain.
+// recorded on older invoices). At n=1 (the invoice that actually exists)
+// it's "Invoiced"; rolling the cycle forward further (n>1, because no
+// newer invoice exists yet) makes it "Projected". A projected row that
+// needed more than one missed cycle to catch up to today is flagged
+// "overdue" — its actual renewal date is less certain than the others.
 // ══════════════════════════════════════════════════════════════
 function paymentAnchorDateStr(p: any): string | null {
   if (p.payment_date) return p.payment_date
@@ -6935,6 +6959,18 @@ function coverageEndDate(anchorStr: string, cycleMonths: number): Date {
   const d = addMonthsToDateStr(anchorStr, cycleMonths)
   d.setDate(d.getDate() - 1)
   return d
+}
+// Which calendar month a renewal/invoice starting on `dateStr` is expected to actually
+// be COLLECTED in. A cycle that starts on or before the 23rd is counted in its own
+// month; starting after the 23rd, real-world collection typically slips to the next
+// month (the parent pays a few days late, or the invoice itself only goes out then) —
+// so the forecast counts it there instead of the month it technically starts in.
+function effectiveCollectionMonth(dateStr: string): string {
+  const day = Number(dateStr.slice(8, 10))
+  if (day <= 23) return dateStr.slice(0, 7)
+  const d = new Date(dateStr + 'T00:00:00')
+  d.setMonth(d.getMonth() + 1)
+  return d.toISOString().slice(0, 7)
 }
 function monthLabelOf(monthKey: string): string {
   return new Date(monthKey + '-01T00:00:00').toLocaleString('en-IN', { month: 'long', year: 'numeric' })
@@ -7067,16 +7103,20 @@ function RevenueForecastReport({ students, subjects, payments, exportCSV }: any)
 
           // How many cycles from the latest invoice does it take to reach the
           // viewed month? n=1 is the invoice that actually exists; n>1 means
-          // we're projecting a renewal that hasn't been invoiced yet.
+          // we're projecting a renewal that hasn't been invoiced yet. Bucketed
+          // by when that cycle's renewal is expected to be COLLECTED (its raise
+          // date, pushed a month later if that date falls after the 23rd) —
+          // not by when its coverage period ends.
           let n = 1
-          let end = coverageEndDate(latest.anchor, cycleMonths * n)
-          let endKey = end.toISOString().slice(0, 7)
-          while (endKey < monthKey) {
+          let cycleStartStr = latest.anchor
+          let effectiveKey = effectiveCollectionMonth(cycleStartStr)
+          while (effectiveKey < monthKey) {
             n++
-            end = coverageEndDate(latest.anchor, cycleMonths * n)
-            endKey = end.toISOString().slice(0, 7)
+            cycleStartStr = addMonthsToDateStr(latest.anchor, cycleMonths * (n - 1)).toISOString().slice(0, 10)
+            effectiveKey = effectiveCollectionMonth(cycleStartStr)
           }
-          if (endKey !== monthKey) return // this student's cycle doesn't land in the viewed month at all
+          if (effectiveKey !== monthKey) return // this student's cycle doesn't land in the viewed month at all
+          const end = coverageEndDate(latest.anchor, cycleMonths * n)
 
           // Overdue-as-of-today is a fixed fact independent of which month is
           // being viewed, judged against the start of the current calendar
@@ -7095,7 +7135,7 @@ function RevenueForecastReport({ students, subjects, payments, exportCSV }: any)
             studentName: student.full_name,
             subjectName: subjects.find((s: any) => s.id === ss.subject_id)?.name || '—',
             amount: latest.amount || 0,
-            invoiceDate: latest.anchor,
+            invoiceDate: cycleStartStr,
             cycleMonths,
             cycleKnown: Number(latest.raw.months) > 0,
             coverageEnd: end.toISOString().slice(0, 10),
@@ -7195,12 +7235,137 @@ function RevenueForecastReport({ students, subjects, payments, exportCSV }: any)
       </div>
 
       <div className="text-xs text-gray-400 mt-4 border-t border-gray-100 pt-3 leading-relaxed">
-        <strong>How this is calculated:</strong> every invoice whose coverage period ends in {monthLabelOf(monthKey)} — a monthly
-        invoice for this month, a 3-month invoice that started 2 months ago, a 6-month invoice that started 5 months ago, and so on.
-        Split-payment installments for the same bill are combined into one invoice first, so a part-paid package isn't split across
-        months. "Invoiced" rows are invoices that actually exist; "Projected" rows are renewals we expect but haven't been invoiced
-        yet, estimated at the same price and cycle length as the last one. "Overdue" means the student needed more than one missed
-        cycle to catch up to today, so their actual renewal date is less certain than the others.
+        <strong>How this is calculated:</strong> every invoice/renewal expected to be COLLECTED in {monthLabelOf(monthKey)} — based
+        on when that billing cycle starts, not when its coverage ends. A cycle starting on or before the 23rd counts in its own
+        month; one starting after the 23rd is pushed to the following month instead, since a late-month renewal is rarely paid
+        before the month turns over. Split-payment installments for the same bill are combined into one invoice first, so a
+        part-paid package isn't split across months. "Invoiced" rows are invoices that actually exist; "Projected" rows are
+        renewals we expect but haven't been invoiced yet, estimated at the same price and cycle length as the last one. "Overdue"
+        means the student needed more than one missed cycle to catch up to today, so their actual renewal date is less certain
+        than the others.
+      </div>
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════
+// PACKAGE EXPIRY CALENDAR
+// "Which students' packages are getting over, on which day" — for every
+// active student+subject with a most-recent PAID invoice that hasn't
+// finished its coverage yet, groups them by the day that coverage ends
+// (same collapseInvoices/coverageEndDate math as Revenue Forecast, so the
+// two reports always agree). Classes-taken-vs-allowance is best-effort:
+// it reads from the same capped, most-recent-first attendance load the
+// rest of Reports uses, so a low-activity student's older records can be
+// undercounted — see StudentDetailModal for the per-student exact version.
+// ══════════════════════════════════════════════════════════════
+function PackageExpiryReport({ students, subjects, packages, payments, attendance, exportCSV }: any) {
+  const todayStr = new Date().toISOString().slice(0, 10)
+  const [daysAhead, setDaysAhead] = useState(30)
+
+  const rows = useMemo(() => {
+    const out: any[] = []
+    students.filter((s: any) => (s.status || 'Active') === 'Active').forEach((student: any) => {
+      (student.student_subjects || []).forEach((ss: any) => {
+        const subjectName = subjects.find((s: any) => s.id === ss.subject_id)?.name || '—'
+        const paidForSubject = payments.filter((p: any) => p.student_id === student.id && p.subject_id === ss.subject_id && p.status === 'paid')
+        const invoices = collapseInvoices(paidForSubject).sort((a: any, b: any) => b.anchor.localeCompare(a.anchor))
+        const latest = invoices[0]
+        if (!latest) return // no paid package on record — nothing to forecast an ending for
+        const end = coverageEndDate(latest.anchor, latest.months).toISOString().slice(0, 10)
+        if (end < todayStr) return // already ended — this is an "expired" case, not an upcoming one
+
+        const pkg = packages.find((pk: any) => pk.id === latest.raw?.package_id)
+        const cycleAttendance = (attendance || []).filter((a: any) =>
+          a.student_id === student.id && a.type === 'student' &&
+          a.class_date >= latest.anchor && a.class_date <= end &&
+          a.class_schedules?.subjects?.name === subjectName
+        )
+        const taken = cycleAttendance.filter((a: any) => a.status === 'present' || a.status === 'late').length
+        const allowance = pkg ? pkg.classes_pm * latest.months : null
+
+        out.push({
+          studentName: student.full_name,
+          studentEmail: student.email,
+          subjectName,
+          pkgName: pkg?.name || (pkg ? `${pkg.classes_pm}/mo` : '—'),
+          end,
+          taken,
+          allowance,
+          remaining: allowance != null ? Math.max(0, allowance - taken) : null,
+        })
+      })
+    })
+    return out.sort((a, b) => a.end.localeCompare(b.end))
+  }, [students, subjects, packages, payments, attendance])
+
+  const cutoff = addDaysToDateStr(todayStr, daysAhead)
+  const visible = rows.filter((r: any) => r.end <= cutoff)
+  const byDay: Record<string, any[]> = {}
+  visible.forEach((r: any) => { (byDay[r.end] = byDay[r.end] || []).push(r) })
+  const days = Object.keys(byDay).sort()
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="font-semibold text-gray-900">Package Expiry Calendar</h2>
+        <button
+          onClick={() => exportCSV(visible.map((r: any) => ({
+            Student: r.studentName, Email: r.studentEmail, Subject: r.subjectName, Package: r.pkgName,
+            EndsOn: r.end, ClassesTaken: r.taken, Allowance: r.allowance ?? '', Remaining: r.remaining ?? '',
+          })), 'package_expiry.csv')}
+          className="btn btn-sm"
+        ><Download className="w-3 h-3"/> Export</button>
+      </div>
+
+      <div className="flex items-center gap-2 mb-5">
+        {[14, 30, 60].map(n => (
+          <button
+            key={n}
+            onClick={() => setDaysAhead(n)}
+            className={clsx('px-3 py-1.5 rounded-lg text-xs font-medium border',
+              daysAhead === n ? 'bg-brand-600 text-white border-brand-600' : 'bg-white text-gray-500 border-gray-200 hover:bg-gray-50'
+            )}
+          >Next {n} days</button>
+        ))}
+        <span className="text-xs text-gray-400 ml-2">{visible.length} package{visible.length !== 1 ? 's' : ''} ending</span>
+      </div>
+
+      {days.length === 0
+        ? <div className="text-sm text-gray-400">No active packages ending in the next {daysAhead} days.</div>
+        : <div className="space-y-4">
+            {days.map(d => (
+              <div key={d}>
+                <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                  {new Date(d + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}
+                  {d === todayStr && <span className="badge bg-amber-100 text-amber-700 ml-2">today</span>}
+                  <span className="text-gray-300 font-normal normal-case ml-2">· {byDay[d].length} package{byDay[d].length !== 1 ? 's' : ''}</span>
+                </div>
+                <div className="space-y-1.5">
+                  {byDay[d].map((r: any, i: number) => (
+                    <div key={i} className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-gray-800">{r.studentName} <span className="text-gray-400 font-normal">· {r.subjectName}</span></div>
+                        <div className="text-xs text-gray-400">{r.pkgName}</div>
+                      </div>
+                      {r.allowance != null && (
+                        <span className={clsx('badge text-xs font-semibold flex-shrink-0',
+                          r.remaining <= 0 ? 'bg-red-50 text-red-700' : r.remaining <= 2 ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'
+                        )}>{r.taken}/{r.allowance} taken</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+      }
+
+      <div className="text-xs text-gray-400 mt-4 border-t border-gray-100 pt-3 leading-relaxed">
+        Every active student+subject whose most recent paid package hasn't finished its coverage yet, grouped by the day it ends.
+        "Taken" counts classes marked present/late against that package's allowance for the current cycle. This feeds the same
+        renewal-timing logic as Revenue Forecast, and a low-activity student's classes-taken count can be undercounted if their
+        history falls outside the app's most recent attendance records — check the student's own detail view for an exact count.
       </div>
     </div>
   )
@@ -7208,6 +7373,7 @@ function RevenueForecastReport({ students, subjects, payments, exportCSV }: any)
 
 function MonthlyBreakdownReport({ paidPayments, last12Months, monthlyCollection, totalYTD, totalMTD, fyLabel, exportCSV, MonthChart, isSuperadmin }: any) {
   const [selectedMonth, setSelectedMonth] = useState<string | null>(null)
+  const [drillView, setDrillView] = useState<'day' | 'student'>('day')
 
   const monthStudents = selectedMonth
     ? paidPayments.filter((p: any) => p.payment_date?.startsWith(selectedMonth))
@@ -7223,6 +7389,19 @@ function MonthlyBreakdownReport({ paidPayments, last12Months, monthlyCollection,
   const studentList = Object.values(byStudent).sort((a, b) => a.name.localeCompare(b.name))
   const monthTotal = monthStudents.reduce((a: number, p: any) => a + p.amount, 0)
 
+  // Group by calendar day for the selected month — collection broken down day by day.
+  const byDay: Record<string, { date: string; amount: number; count: number; students: Set<string> }> = {}
+  monthStudents.forEach((p: any) => {
+    const d = p.payment_date
+    if (!d) return
+    if (!byDay[d]) byDay[d] = { date: d, amount: 0, count: 0, students: new Set() }
+    byDay[d].amount += p.amount
+    byDay[d].count += 1
+    byDay[d].students.add(p.students?.full_name || p.student_name || 'Unknown')
+  })
+  const dayList = Object.values(byDay).sort((a, b) => a.date.localeCompare(b.date))
+  const maxDayAmount = Math.max(...dayList.map(d => d.amount), 1)
+
   function exportMonth() {
     if (!selectedMonth) return
     const rows = monthStudents.map((p: any) => ({
@@ -7236,6 +7415,14 @@ function MonthlyBreakdownReport({ paidPayments, last12Months, monthlyCollection,
       Date: p.payment_date || '',
     }))
     exportCSV(rows, `payments_${selectedMonth}.csv`)
+  }
+
+  function exportDayBreakdown() {
+    if (!selectedMonth) return
+    exportCSV(
+      dayList.map(d => ({ Date: d.date, Amount: d.amount, Transactions: d.count, Students: d.students.size })),
+      `daily_collection_${selectedMonth}.csv`
+    )
   }
 
   return (
@@ -7335,11 +7522,52 @@ function MonthlyBreakdownReport({ paidPayments, last12Months, monthlyCollection,
               </h3>
               <div className="text-xs text-gray-400 mt-0.5">{studentList.length} students · {monthStudents.length} payments · Total: {fmt(monthTotal)}</div>
             </div>
-            <button onClick={() => setSelectedMonth(null)} className="btn btn-sm">
-              <X className="w-3 h-3"/> All Months
-            </button>
+            <div className="flex items-center gap-2">
+              <div className="flex rounded-lg border border-gray-200 overflow-hidden">
+                <button onClick={() => setDrillView('day')} className={clsx('px-3 py-1.5 text-xs font-medium', drillView==='day' ? 'bg-brand-600 text-white' : 'bg-white text-gray-500 hover:bg-gray-50')}>By Day</button>
+                <button onClick={() => setDrillView('student')} className={clsx('px-3 py-1.5 text-xs font-medium', drillView==='student' ? 'bg-brand-600 text-white' : 'bg-white text-gray-500 hover:bg-gray-50')}>By Student</button>
+              </div>
+              <button onClick={() => setSelectedMonth(null)} className="btn btn-sm">
+                <X className="w-3 h-3"/> All Months
+              </button>
+            </div>
           </div>
 
+          {drillView === 'day' && (
+            <div className="mb-5">
+              <div className="flex items-center justify-between mb-3">
+                <div className="text-xs text-gray-400">{dayList.length} day{dayList.length!==1?'s':''} with collection</div>
+                <button onClick={exportDayBreakdown} className="btn btn-sm"><Download className="w-3 h-3"/> Export Day Breakdown</button>
+              </div>
+              {dayList.length === 0
+                ? <div className="text-sm text-gray-400">No payments recorded for this month.</div>
+                : <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead><tr>
+                        <th className="th">Date</th><th className="th">Collection</th><th className="th text-right">Transactions</th><th className="th text-right">Students</th>
+                      </tr></thead>
+                      <tbody>
+                        {dayList.map(d => (
+                          <tr key={d.date} className="hover:bg-brand-50/50">
+                            <td className="td font-medium text-gray-800">{new Date(d.date+'T00:00:00').toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short'})}</td>
+                            <td className="td">
+                              <div className="flex items-center gap-2">
+                                <div className="h-2 rounded-full bg-brand-500" style={{ width: `${Math.max(4,(d.amount/maxDayAmount)*120)}px` }} />
+                                <span className="font-semibold text-emerald-700">{fmt(d.amount)}</span>
+                              </div>
+                            </td>
+                            <td className="td text-right text-gray-400">{d.count}</td>
+                            <td className="td text-right text-gray-400">{d.students.size}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+              }
+            </div>
+          )}
+
+          {drillView === 'student' && (
           <div className="space-y-2">
             {studentList.map((stu, i) => {
               const stuTotal = stu.payments.reduce((a: number, p: any) => a + p.amount, 0)
@@ -7393,6 +7621,7 @@ function MonthlyBreakdownReport({ paidPayments, last12Months, monthlyCollection,
               )
             })}
           </div>
+          )}
 
           {/* Month totals footer */}
           <div className="mt-4 p-4 bg-gray-50 rounded-xl border border-gray-200">
