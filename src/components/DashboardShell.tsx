@@ -7077,6 +7077,7 @@ function RevenueForecastReport({ students, subjects, payments, exportCSV }: any)
   const todayKey = new Date().toISOString().slice(0, 7)
   const [monthKey, setMonthKey] = useState(todayKey)
   const [showOverdueOnly, setShowOverdueOnly] = useState(false)
+  const [viewMode, setViewMode] = useState<'date' | 'list'>('date')
 
   function shiftMonth(delta: number) {
     const d = new Date(monthKey + '-01T00:00:00')
@@ -7154,6 +7155,12 @@ function RevenueForecastReport({ students, subjects, payments, exportCSV }: any)
 
   const rows = showOverdueOnly ? result.rows.filter((r: any) => r.overdue) : result.rows
 
+  // Group by expected invoice/renewal date — this is what "by student and date" means here:
+  // each date section lists exactly the students whose cycle is expected to raise/renew then.
+  const byDate: Record<string, any[]> = {}
+  rows.forEach((r: any) => { (byDate[r.invoiceDate] = byDate[r.invoiceDate] || []).push(r) })
+  const dateKeys = Object.keys(byDate).sort()
+
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
@@ -7201,38 +7208,87 @@ function RevenueForecastReport({ students, subjects, payments, exportCSV }: any)
         </button>
       </div>
 
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead><tr>
-            <th className="th">Student</th><th className="th">Subject</th><th className="th">Invoice Date</th>
-            <th className="th">Cycle</th><th className="th">Coverage Ends</th><th className="th">Amount</th><th className="th">Status</th>
-          </tr></thead>
-          <tbody>
-            {rows.length === 0 && (
-              <tr><td className="td text-gray-400" colSpan={7}>
-                {result.rows.length === 0 ? `Nothing is invoiced or expected to renew in ${monthLabelOf(monthKey)}.` : 'No overdue renewals in this list.'}
-              </td></tr>
-            )}
-            {rows.map((r: any, i: number) => (
-              <tr key={i}>
-                <td className="td font-medium text-gray-800">{r.studentName}</td>
-                <td className="td">{r.subjectName}</td>
-                <td className="td text-gray-500">{r.invoiceDate}</td>
-                <td className="td text-gray-500">{r.cycleMonths} mo</td>
-                <td className="td">{r.coverageEnd}</td>
-                <td className="td font-semibold">{fmt(r.amount)}</td>
-                <td className="td">
-                  {r.status === 'invoiced'
-                    ? <span className="badge bg-blue-100 text-blue-700">invoiced</span>
-                    : <span className="badge bg-violet-100 text-violet-700 mr-1">projected</span>}
-                  {r.overdue && <span className="badge bg-amber-100 text-amber-800 mr-1">overdue</span>}
-                  {!r.cycleKnown && <span className="badge bg-gray-100 text-gray-500">assumed monthly</span>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-xs text-gray-400">{rows.length} row{rows.length !== 1 ? 's' : ''} · {fmt(rows.reduce((a: number, r: any) => a + r.amount, 0))} total</div>
+        <div className="flex rounded-lg border border-gray-200 overflow-hidden">
+          <button onClick={() => setViewMode('date')} className={clsx('px-3 py-1.5 text-xs font-medium', viewMode==='date' ? 'bg-brand-600 text-white' : 'bg-white text-gray-500 hover:bg-gray-50')}>By Date</button>
+          <button onClick={() => setViewMode('list')} className={clsx('px-3 py-1.5 text-xs font-medium', viewMode==='list' ? 'bg-brand-600 text-white' : 'bg-white text-gray-500 hover:bg-gray-50')}>Flat List</button>
+        </div>
       </div>
+
+      {rows.length === 0 && (
+        <div className="text-sm text-gray-400 py-4">
+          {result.rows.length === 0 ? `Nothing is invoiced or expected to renew in ${monthLabelOf(monthKey)}.` : 'No overdue renewals in this list.'}
+        </div>
+      )}
+
+      {viewMode === 'date' && rows.length > 0 && (
+        <div className="space-y-4">
+          {dateKeys.map(d => {
+            const dayRows = byDate[d]
+            const dayTotal = dayRows.reduce((a: number, r: any) => a + r.amount, 0)
+            return (
+              <div key={d}>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                    {new Date(d + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}
+                    <span className="text-gray-300 font-normal normal-case ml-2">· {dayRows.length} student{dayRows.length !== 1 ? 's' : ''}</span>
+                  </div>
+                  <div className="text-xs font-semibold text-emerald-700">{fmt(dayTotal)}</div>
+                </div>
+                <div className="space-y-1.5">
+                  {dayRows.map((r: any, i: number) => (
+                    <div key={i} className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-gray-800">{r.studentName} <span className="text-gray-400 font-normal">· {r.subjectName}</span></div>
+                        <div className="text-xs text-gray-400">{r.cycleMonths} mo cycle · coverage ends {r.coverageEnd}</div>
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        {r.status === 'invoiced'
+                          ? <span className="badge bg-blue-100 text-blue-700">invoiced</span>
+                          : <span className="badge bg-violet-100 text-violet-700">projected</span>}
+                        {r.overdue && <span className="badge bg-amber-100 text-amber-800">overdue</span>}
+                        {!r.cycleKnown && <span className="badge bg-gray-100 text-gray-500">assumed monthly</span>}
+                        <span className="text-sm font-semibold w-20 text-right">{fmt(r.amount)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {viewMode === 'list' && rows.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr>
+              <th className="th">Student</th><th className="th">Subject</th><th className="th">Invoice Date</th>
+              <th className="th">Cycle</th><th className="th">Coverage Ends</th><th className="th">Amount</th><th className="th">Status</th>
+            </tr></thead>
+            <tbody>
+              {rows.map((r: any, i: number) => (
+                <tr key={i}>
+                  <td className="td font-medium text-gray-800">{r.studentName}</td>
+                  <td className="td">{r.subjectName}</td>
+                  <td className="td text-gray-500">{r.invoiceDate}</td>
+                  <td className="td text-gray-500">{r.cycleMonths} mo</td>
+                  <td className="td">{r.coverageEnd}</td>
+                  <td className="td font-semibold">{fmt(r.amount)}</td>
+                  <td className="td">
+                    {r.status === 'invoiced'
+                      ? <span className="badge bg-blue-100 text-blue-700">invoiced</span>
+                      : <span className="badge bg-violet-100 text-violet-700 mr-1">projected</span>}
+                    {r.overdue && <span className="badge bg-amber-100 text-amber-800 mr-1">overdue</span>}
+                    {!r.cycleKnown && <span className="badge bg-gray-100 text-gray-500">assumed monthly</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       <div className="text-xs text-gray-400 mt-4 border-t border-gray-100 pt-3 leading-relaxed">
         <strong>How this is calculated:</strong> every invoice/renewal expected to be COLLECTED in {monthLabelOf(monthKey)} — based
