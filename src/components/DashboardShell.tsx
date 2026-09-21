@@ -7155,11 +7155,15 @@ function RevenueForecastReport({ students, subjects, payments, exportCSV }: any)
 
   const rows = showOverdueOnly ? result.rows.filter((r: any) => r.overdue) : result.rows
 
-  // Group by expected invoice/renewal date — this is what "by student and date" means here:
-  // each date section lists exactly the students whose cycle is expected to raise/renew then.
+  // Group by COVERAGE END date — the day each package actually runs out, which is what
+  // you'd act on (when to expect the renewal to be due), not the day its current cycle
+  // started. Note this is a different date than the 23rd-of-month rule used above to pick
+  // which MONTH a row counts toward — that's about collection timing; this is about the
+  // package's actual expiry date, same field the Package Expiry Calendar groups by.
   const byDate: Record<string, any[]> = {}
-  rows.forEach((r: any) => { (byDate[r.invoiceDate] = byDate[r.invoiceDate] || []).push(r) })
+  rows.forEach((r: any) => { (byDate[r.coverageEnd] = byDate[r.coverageEnd] || []).push(r) })
   const dateKeys = Object.keys(byDate).sort()
+  const maxDateTotal = Math.max(...dateKeys.map(d => byDate[d].reduce((a: number, r: any) => a + r.amount, 0)), 1)
 
   return (
     <div>
@@ -7223,40 +7227,62 @@ function RevenueForecastReport({ students, subjects, payments, exportCSV }: any)
       )}
 
       {viewMode === 'date' && rows.length > 0 && (
-        <div className="space-y-4">
-          {dateKeys.map(d => {
-            const dayRows = byDate[d]
-            const dayTotal = dayRows.reduce((a: number, r: any) => a + r.amount, 0)
-            return (
-              <div key={d}>
-                <div className="flex items-center justify-between mb-2">
-                  <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
-                    {new Date(d + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}
-                    <span className="text-gray-300 font-normal normal-case ml-2">· {dayRows.length} student{dayRows.length !== 1 ? 's' : ''}</span>
-                  </div>
-                  <div className="text-xs font-semibold text-emerald-700">{fmt(dayTotal)}</div>
-                </div>
-                <div className="space-y-1.5">
-                  {dayRows.map((r: any, i: number) => (
-                    <div key={i} className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
-                      <div className="min-w-0">
-                        <div className="text-sm font-medium text-gray-800">{r.studentName} <span className="text-gray-400 font-normal">· {r.subjectName}</span></div>
-                        <div className="text-xs text-gray-400">{r.cycleMonths} mo cycle · coverage ends {r.coverageEnd}</div>
-                      </div>
-                      <div className="flex items-center gap-2 flex-shrink-0">
-                        {r.status === 'invoiced'
-                          ? <span className="badge bg-blue-100 text-blue-700">invoiced</span>
-                          : <span className="badge bg-violet-100 text-violet-700">projected</span>}
-                        {r.overdue && <span className="badge bg-amber-100 text-amber-800">overdue</span>}
-                        {!r.cycleKnown && <span className="badge bg-gray-100 text-gray-500">assumed monthly</span>}
-                        <span className="text-sm font-semibold w-20 text-right">{fmt(r.amount)}</span>
-                      </div>
+        <div>
+          {/* Bar chart — amount expected by the date each package's coverage ends */}
+          <div className="mb-6">
+            <div className="flex items-end gap-1.5 h-36 mb-2 overflow-x-auto">
+              {dateKeys.map(d => {
+                const dayTotal = byDate[d].reduce((a: number, r: any) => a + r.amount, 0)
+                const pct = (dayTotal / maxDateTotal) * 100
+                const dayNum = Number(d.slice(8, 10))
+                return (
+                  <div key={d} className="flex flex-col items-center gap-1 flex-shrink-0" style={{ width: `${Math.max(28, 640 / dateKeys.length)}px` }}>
+                    <div className="w-full relative flex items-end" style={{ height: '100px' }} title={`${d}: ${fmt(dayTotal)}`}>
+                      <div className="w-full rounded-t-md bg-brand-500" style={{ height: `${pct}%`, minHeight: dayTotal > 0 ? 4 : 0 }} />
                     </div>
-                  ))}
+                    <div className="text-[10px] text-gray-400">{dayNum}</div>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="text-xs text-gray-400 text-center">Expected revenue by the day each package's coverage ends</div>
+          </div>
+
+          <div className="space-y-4">
+            {dateKeys.map(d => {
+              const dayRows = byDate[d]
+              const dayTotal = dayRows.reduce((a: number, r: any) => a + r.amount, 0)
+              return (
+                <div key={d}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                      {new Date(d + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}
+                      <span className="text-gray-300 font-normal normal-case ml-2">· {dayRows.length} student{dayRows.length !== 1 ? 's' : ''}</span>
+                    </div>
+                    <div className="text-xs font-semibold text-emerald-700">{fmt(dayTotal)}</div>
+                  </div>
+                  <div className="space-y-1.5">
+                    {dayRows.map((r: any, i: number) => (
+                      <div key={i} className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium text-gray-800">{r.studentName} <span className="text-gray-400 font-normal">· {r.subjectName}</span></div>
+                          <div className="text-xs text-gray-400">{r.cycleMonths} mo cycle · raised {r.invoiceDate}</div>
+                        </div>
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          {r.status === 'invoiced'
+                            ? <span className="badge bg-blue-100 text-blue-700">invoiced</span>
+                            : <span className="badge bg-violet-100 text-violet-700">projected</span>}
+                          {r.overdue && <span className="badge bg-amber-100 text-amber-800">overdue</span>}
+                          {!r.cycleKnown && <span className="badge bg-gray-100 text-gray-500">assumed monthly</span>}
+                          <span className="text-sm font-semibold w-20 text-right">{fmt(r.amount)}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            )
-          })}
+              )
+            })}
+          </div>
         </div>
       )}
 
@@ -7291,14 +7317,16 @@ function RevenueForecastReport({ students, subjects, payments, exportCSV }: any)
       )}
 
       <div className="text-xs text-gray-400 mt-4 border-t border-gray-100 pt-3 leading-relaxed">
-        <strong>How this is calculated:</strong> every invoice/renewal expected to be COLLECTED in {monthLabelOf(monthKey)} — based
-        on when that billing cycle starts, not when its coverage ends. A cycle starting on or before the 23rd counts in its own
-        month; one starting after the 23rd is pushed to the following month instead, since a late-month renewal is rarely paid
-        before the month turns over. Split-payment installments for the same bill are combined into one invoice first, so a
-        part-paid package isn't split across months. "Invoiced" rows are invoices that actually exist; "Projected" rows are
-        renewals we expect but haven't been invoiced yet, estimated at the same price and cycle length as the last one. "Overdue"
-        means the student needed more than one missed cycle to catch up to today, so their actual renewal date is less certain
-        than the others.
+        <strong>How this is calculated:</strong> which MONTH a row counts toward is based on when that billing cycle starts (its
+        raise date), not when its coverage ends — a cycle starting on or before the 23rd counts in its own month, one starting
+        after the 23rd is pushed to the following month, since a late-month renewal is rarely actually collected before the month
+        turns over. The By Date view above then groups those same rows by their COVERAGE END date instead — the day the package
+        actually runs out — so it lines up with the Package Expiry Calendar; the Flat List view shows both dates per row (Invoice
+        Date = raise date, Coverage Ends = expiry date) if you need to see the distinction directly. Split-payment installments
+        for the same bill are combined into one invoice first, so a part-paid package isn't split across months. "Invoiced" rows
+        are invoices that actually exist; "Projected" rows are renewals we expect but haven't been invoiced yet, estimated at the
+        same price and cycle length as the last one. "Overdue" means the student needed more than one missed cycle to catch up to
+        today, so their actual renewal date is less certain than the others.
       </div>
     </div>
   )
